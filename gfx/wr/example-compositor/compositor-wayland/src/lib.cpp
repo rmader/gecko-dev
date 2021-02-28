@@ -1,0 +1,820 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#define UNICODE
+
+#include <algorithm>
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <map>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <unordered_map>
+#include <vector>
+
+#include <wayland-client.h>
+#include <wayland-egl.h>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GL/gl.h>
+#include <GLES2/gl2.h>
+
+#include "viewporter-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
+
+#define UNUSED(x) (void)(x)
+
+#define PRINT_ONCE(x)            \
+  {                              \
+    static bool printed = false; \
+    if (!printed) {              \
+      fprintf(stderr, x);        \
+      printed = true;            \
+    }                            \
+  }
+
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+
+#define NUM_QUERIES 2
+
+#define USE_VIRTUAL_SURFACES
+#define VIRTUAL_OFFSET 512 * 1024
+
+enum SyncMode {
+  None_ = 0,
+  Swap = 1,
+  Commit = 2,
+  Flush = 3,
+  Query = 4,
+  Timer = 5,
+};
+
+// The OS compositor representation of a picture cache tile.
+struct Tile {
+  struct wl_surface* surface;
+  struct wl_subsurface* subsurface;
+  struct wp_viewport* viewport;
+  struct wl_egl_window* egl_window;
+  EGLSurface egl_surface;
+  bool visible;
+
+  int x;
+  int y;
+
+  struct {
+    int x;
+    int y;
+    int width;
+    int height;
+  } damage;
+};
+
+struct TileKey {
+  int x;
+  int y;
+
+  TileKey(int ax, int ay) : x(ax), y(ay) {}
+};
+
+bool operator==(const TileKey& k0, const TileKey& k1) {
+  return k0.x == k1.x && k0.y == k1.y;
+}
+
+struct TileKeyHasher {
+  size_t operator()(const TileKey& key) const { return key.x ^ key.y; }
+};
+
+struct SHMBuffer {
+  struct wl_buffer* buffer;
+  void* shm_data;
+};
+
+struct Surface {
+  uint64_t id;
+  int tile_width;
+  int tile_height;
+  bool is_opaque;
+  std::unordered_map<TileKey, Tile, TileKeyHasher> tiles;
+};
+
+struct CachedFrameBuffer {
+  int width;
+  int height;
+  GLuint fboId;
+  GLuint depthRboId;
+};
+
+struct WLWindow;
+
+struct WLDisplay {
+  struct wl_display* display;
+  struct wl_registry* registry;
+  struct wl_compositor* compositor;
+  struct wl_subcompositor* subcompositor;
+  struct xdg_wm_base* wm_base;
+  struct wl_seat* seat;
+  struct wl_pointer* pointer;
+  struct wl_touch* touch;
+  struct wl_keyboard* keyboard;
+  struct wl_shm* shm;
+  struct wl_cursor_theme* cursor_theme;
+  struct wl_cursor* default_cursor;
+  struct wl_surface* cursor_surface;
+  struct wp_viewporter* viewporter;
+  WLWindow* window;
+};
+
+struct WLGeometry {
+  int width, height;
+};
+
+struct WLWindow {
+  WLDisplay* display;
+  WLGeometry geometry;
+  struct {
+    GLuint rotation_uniform;
+    GLuint pos;
+    GLuint col;
+  } gl;
+
+  uint32_t benchmark_time, frames;
+  struct wl_egl_window* native;
+  struct wl_surface* surface;
+  struct xdg_surface* xdg_surface;
+  struct xdg_toplevel* xdg_toplevel;
+  struct wl_callback* callback;
+  struct wp_viewport* viewport;
+  SHMBuffer* shm_buffer;
+  int fullscreen, maximized, opaque, buffer_size, frame_sync, delay;
+  bool wait_for_configure;
+  bool closed;
+
+  //////////////////////////
+
+  bool enable_compositor;
+  SyncMode sync_mode;
+
+  EGLDeviceEXT eglDevice;
+  EGLDisplay eglDisplay;
+  EGLContext eglContext;
+  EGLConfig config;
+  // Framebuffer surface for debug mode when we are not using DC
+  EGLSurface fb_surface;
+  EGLSurface egl_surface;
+
+  EGLImage eglImage;
+  GLuint mColorRBO;
+
+  std::vector<CachedFrameBuffer> mFrameBuffers;
+
+  // Maintain list of layer state between frames to avoid visual tree rebuild.
+  std::vector<uint64_t> currentLayers;
+  std::vector<uint64_t> prevLayers;
+
+  // Maps WR surface IDs to each OS surface
+  std::unordered_map<uint64_t, Surface> surfaces;
+  Tile* currentTile;
+};
+
+/*static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
+                                LPARAM lParam) {
+  switch (message) {
+    case WM_DESTROY:
+      PostQuitMessage(0);
+      return 1;
+  }
+
+  return DefWindowProc(hwnd, message, wParam, lParam);
+}*/
+
+extern "C" {
+
+void init_wl_registry(WLWindow* window);
+void init_xdg_window(WLWindow* window);
+int create_shm_buffer(WLDisplay* display, SHMBuffer* buffer, int width,
+                      int height, uint32_t format);
+void com_wl_create_surface(WLWindow* window, uint64_t surface_id,
+                           int tile_width, int tile_height, bool is_opaque);
+void com_wl_create_tile(WLWindow* window, uint64_t surface_id, int x, int y);
+
+void set_color(void* target, int alpha, int red, int green, int blue,
+               size_t size) {
+  for (size_t i = 0; i < size * 4; i++) {
+    int color;
+    switch (i % 4) {
+      case 0:
+        color = blue;
+        break;
+      case 1:
+        color = red;
+        break;
+      case 2:
+        color = green;
+        break;
+      case 3:
+        color = alpha;
+        break;
+    }
+    memset((void*)((size_t)target + i), color, 1);
+  }
+}
+
+WLWindow* com_wl_create_window(int width, int height, bool enable_compositor,
+                               SyncMode sync_mode) {
+  PRINT_ONCE("com_wl_create_window\n");
+  WLDisplay* display = new WLDisplay;
+  WLWindow* window = new WLWindow;
+
+  window->display = display;
+  display->window = window;
+  window->geometry.width = width;
+  window->geometry.height = height;
+  window->enable_compositor = enable_compositor;
+  window->eglImage = EGL_NO_IMAGE;
+  window->sync_mode = sync_mode;
+  window->closed = false;
+
+  display->display = wl_display_connect(NULL);
+  assert(display->display);
+
+  init_wl_registry(window);
+
+  window->eglDisplay =
+      eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, display->display, NULL);
+
+  eglInitialize(window->eglDisplay, nullptr, nullptr);
+  eglBindAPI(EGL_OPENGL_API);
+
+  EGLint num_configs = 0;
+  EGLint cfg_attribs[] = {EGL_SURFACE_TYPE,
+                          EGL_WINDOW_BIT,
+                          EGL_RENDERABLE_TYPE,
+                          EGL_OPENGL_BIT,
+                          EGL_RED_SIZE,
+                          8,
+                          EGL_GREEN_SIZE,
+                          8,
+                          EGL_BLUE_SIZE,
+                          8,
+                          EGL_ALPHA_SIZE,
+                          8,
+                          EGL_DEPTH_SIZE,
+                          24,
+                          EGL_NONE};
+  EGLConfig configs[32];
+
+  eglChooseConfig(window->eglDisplay, cfg_attribs, configs,
+                  sizeof(configs) / sizeof(EGLConfig), &num_configs);
+  assert(num_configs > 0);
+  window->config = configs[0];
+
+  EGLint ctx_attribs[] = {EGL_CONTEXT_OPENGL_PROFILE_MASK,
+                          EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                          EGL_CONTEXT_MAJOR_VERSION,
+                          3,
+                          EGL_CONTEXT_MINOR_VERSION,
+                          2,
+                          EGL_NONE};
+
+  // Create an EGL context that can be used for drawing
+  window->eglContext = eglCreateContext(window->eglDisplay, window->config,
+                                        EGL_NO_CONTEXT, ctx_attribs);
+
+  window->surface = wl_compositor_create_surface(display->compositor);
+
+  if (enable_compositor) {
+    window->fb_surface = EGL_NO_SURFACE;
+    eglSwapInterval(window->eglDisplay, 0);
+  } else {
+    window->native = wl_egl_window_create(
+        window->surface, window->geometry.width, window->geometry.height);
+    window->fb_surface = eglCreateWindowSurface(
+        window->eglDisplay, window->config, window->native, NULL);
+    assert(window->fb_surface != EGL_NO_SURFACE);
+  }
+
+  init_xdg_window(window);
+
+  if (enable_compositor) {
+    xdg_toplevel_set_title(window->xdg_toplevel,
+                           "example-compositor (Wayland)");
+  } else {
+    xdg_toplevel_set_title(window->xdg_toplevel, "example-compositor (Simple)");
+  }
+
+  window->wait_for_configure = true;
+  wl_surface_commit(window->surface);
+
+  EGLBoolean ok = eglMakeCurrent(window->eglDisplay, window->fb_surface,
+                                 window->fb_surface, window->eglContext);
+  assert(ok);
+
+  return window;
+}
+
+bool com_wl_tick(WLWindow* window) {
+  PRINT_ONCE("com_wl_tick\n");
+
+  wl_display_roundtrip(window->display->display);
+  wl_display_dispatch_pending(window->display->display);
+
+  return !window->closed;
+}
+
+void com_wl_swap_buffers(WLWindow* window) {
+  PRINT_ONCE("com_wl_swap_buffers\n");
+  // fprintf(stderr, "com_wl_swap_buffers\n");
+
+  // If not using DC mode, then do a normal EGL swap buffers.
+  if (window->fb_surface != EGL_NO_SURFACE) {
+    switch (window->sync_mode) {
+      case SyncMode::None_:
+        eglSwapInterval(window->eglDisplay, 0);
+        break;
+      case SyncMode::Swap:
+        eglSwapInterval(window->eglDisplay, 1);
+        break;
+      case SyncMode::Timer:
+        usleep(1000000 / 60);
+        break;
+      default:
+        assert(false);
+        break;
+    }
+    eglSwapBuffers(window->eglDisplay, window->fb_surface);
+  } else {
+    switch (window->sync_mode) {
+      case SyncMode::None_:
+        eglSwapInterval(window->eglDisplay, 0);
+        break;
+      case SyncMode::Timer:
+        usleep(1000000 / 60);
+        break;
+      default:
+        assert(false);
+        break;
+    }
+
+    for (auto surface_it = window->surfaces.begin();
+         surface_it != window->surfaces.end(); ++surface_it) {
+      Surface* surface = &surface_it->second;
+
+      for (auto tile_it = surface->tiles.begin();
+           tile_it != surface->tiles.end(); ++tile_it) {
+        Tile* tile = &tile_it->second;
+
+        wl_surface_commit(tile->surface);
+      }
+    }
+    wl_surface_commit(window->surface);
+  }
+}
+
+// Create a new DC surface
+void com_wl_create_surface(WLWindow* window, uint64_t surface_id,
+                           int tile_width, int tile_height, bool is_opaque) {
+  fprintf(stderr,
+          "com_wl_create_surface surface_id %lu opaque: %s tile_dim %d %d\n",
+          surface_id, is_opaque ? "true" : "false", tile_width, tile_height);
+
+  assert(window->surfaces.count(surface_id) == 0);
+
+  Surface surface;
+  surface.id = surface_id;
+  surface.tile_width = tile_width;
+  surface.tile_height = tile_height;
+  surface.is_opaque = is_opaque;
+
+  window->surfaces.emplace(surface_id, surface);
+}
+
+void com_wl_create_tile(WLWindow* window, uint64_t surface_id, int x, int y) {
+  int alpha = 128;
+  int green = (surface_id + 1) * 30;
+  int red = ((x % 2) + 1) * 100;
+  int blue = ((y % 2) + 1) * 100;
+
+  fprintf(stderr,
+          "com_wl_create_tile surface_id %lu x %d y %d argb: %d,%d,%d,%d\n",
+          surface_id, x, y, alpha, red, green, blue);
+  WLDisplay* display = window->display;
+
+  assert(window->surfaces.count(surface_id) == 1);
+  Surface& surface = window->surfaces.at(surface_id);
+
+  TileKey key(x, y);
+  assert(surface.tiles.count(key) == 0);
+
+  Tile tile;
+  tile.x = x;
+  tile.y = y;
+  tile.visible = false;
+
+  tile.surface = wl_compositor_create_surface(display->compositor);
+  tile.subsurface = wl_subcompositor_get_subsurface(
+      display->subcompositor, tile.surface, window->surface);
+  tile.viewport = wp_viewporter_get_viewport(display->viewporter, tile.surface);
+
+  tile.egl_window = wl_egl_window_create(tile.surface, surface.tile_width,
+                                         surface.tile_height);
+  tile.egl_surface = eglCreateWindowSurface(window->eglDisplay, window->config,
+                                            tile.egl_window, NULL);
+  assert(tile.egl_surface != EGL_NO_SURFACE);
+
+  // Place the visual in local-space of this surface
+
+  surface.tiles.emplace(key, tile);
+}
+
+void com_wl_destroy_tile(WLWindow* window, uint64_t surface_id, int x, int y) {
+  assert(window->surfaces.count(surface_id) == 1);
+  Surface& surface = window->surfaces.at(surface_id);
+
+  TileKey key(x, y);
+  assert(surface.tiles.count(key) == 1);
+
+  // Tile& tile = surface.tiles[key];
+
+  surface.tiles.erase(key);
+}
+
+void com_wl_destroy_surface(WLWindow* window, uint64_t surface_id) {
+  assert(window->surfaces.count(surface_id) == 1);
+
+  Surface& surface = window->surfaces.at(surface_id);
+  // Release the video memory and visual in the tree
+  for (auto tile_it = surface.tiles.begin(); tile_it != surface.tiles.end();
+       ++tile_it) {
+    // Tile& tile = tile_it->second;
+
+    // com_wl_destroy_tile(window, surface_id, tile.x, tile.y);
+  }
+
+  window->surfaces.erase(surface_id);
+}
+
+void com_wl_destroy_window(WLWindow* window) {
+  PRINT_ONCE("com_wl_destroy_window\n");
+  for (auto surface_it = window->surfaces.begin();
+       surface_it != window->surfaces.end(); ++surface_it) {
+    Surface& surface = surface_it->second;
+
+    com_wl_destroy_surface(window, surface.id);
+  }
+
+  if (window->fb_surface != EGL_NO_SURFACE) {
+    eglDestroySurface(window->eglDisplay, window->fb_surface);
+  }
+  eglDestroyContext(window->eglDisplay, window->eglContext);
+  eglTerminate(window->eglDisplay);
+
+  delete window;
+}
+
+// Bind a DC surface to allow issuing GL commands to it
+GLuint com_wl_bind_surface(WLWindow* window, uint64_t surface_id, int tile_x,
+                           int tile_y, int* x_offset, int* y_offset,
+                           int dirty_x0, int dirty_y0, int dirty_width,
+                           int dirty_height) {
+  // PRINT_ONCE("com_wl_bind_surface\n");
+  fprintf(stderr,
+          "com_wl_bind_surface surface_id %lu tile_x %d tile_y %d dirty rect: "
+          "%d,%d,%d,%d\n",
+          surface_id, tile_x, tile_y, dirty_x0, dirty_y0, dirty_width,
+          dirty_height);
+
+  *x_offset = 0;
+  *y_offset = 0;
+
+  assert(window->surfaces.count(surface_id) == 1);
+  Surface* surface = &window->surfaces[surface_id];
+
+  TileKey key(tile_x, tile_y);
+  assert(surface->tiles.count(key) == 1);
+  Tile* tile = &surface->tiles[key];
+  window->currentTile = tile;
+
+  tile->damage.x = dirty_x0;
+  tile->damage.y = dirty_y0;
+  tile->damage.width = dirty_width;
+  tile->damage.height = dirty_height;
+
+  window->egl_surface = tile->egl_surface;
+
+  EGLBoolean ok = eglMakeCurrent(window->eglDisplay, window->egl_surface,
+                                 window->egl_surface, window->eglContext);
+  assert(ok);
+
+  // glClearColor(0.0, 0.0, 0.0, 0.5);
+  // glClear(GL_COLOR_BUFFER_BIT);
+
+  return 0;
+}
+
+// Unbind a currently bound DC surface
+void com_wl_unbind_surface(WLWindow* window) {
+  // PRINT_ONCE("com_wl_unbind_surface\n");
+  // fprintf(stderr, "com_wl_unbind_surface\n");
+
+  /*std::vector<EGLint> rects;
+  rects.push_back(window->currentTile->damage.x);
+  rects.push_back(window->currentTile->damage.y);
+  rects.push_back(window->currentTile->damage.width);
+  rects.push_back(window->currentTile->damage.height);
+  eglSwapBuffersWithDamageKHR(window->eglDisplay, window->egl_surface,
+                              rects.data(), 1);*/
+  eglSwapBuffers(window->eglDisplay, window->egl_surface);
+
+  window->currentTile = nullptr;
+
+  EGLBoolean ok = eglMakeCurrent(window->eglDisplay, EGL_NO_SURFACE,
+                                 EGL_NO_SURFACE, window->eglContext);
+  assert(ok);
+}
+
+void com_wl_begin_transaction(WLWindow*) {
+  PRINT_ONCE("com_wl_begin_transaction\n");
+}
+
+// Add a DC surface to the visual tree. Called per-frame to build the
+// composition.
+void com_wl_add_surface(WLWindow* window, uint64_t surface_id, int offset_x,
+                        int offset_y, int clip_x, int clip_y, int clip_w,
+                        int clip_h) {
+  PRINT_ONCE("com_wl_add_surface\n");
+
+  Surface* surface = &window->surfaces[surface_id];
+  window->currentLayers.push_back(surface_id);
+
+  for (auto tile_it = surface->tiles.begin(); tile_it != surface->tiles.end();
+       ++tile_it) {
+    Tile* tile = &tile_it->second;
+
+    int pos_x = MAX((tile->x * surface->tile_width) + offset_x, clip_x);
+    int pos_y = MAX((tile->y * surface->tile_height) + offset_y, clip_y);
+
+    float view_x = MAX((clip_x - offset_x) - tile->x * surface->tile_width, 0);
+    float view_y = MAX((clip_y - offset_y) - tile->y * surface->tile_height, 0);
+
+    float view_w = MIN(surface->tile_width - view_x, (clip_x + clip_w) - pos_x);
+    float view_h =
+        MIN(surface->tile_height - view_y, (clip_y + clip_h) - pos_y);
+    view_w = MIN(window->geometry.width - pos_x, view_w);
+    view_h = MIN(window->geometry.height - pos_y, view_h);
+
+    if (view_w > 0 && view_h > 0) {
+      if (!tile->visible) {
+        tile->visible = true;
+      }
+
+      wl_subsurface_set_position(tile->subsurface, pos_x, pos_y);
+      wp_viewport_set_source(tile->viewport, wl_fixed_from_double(view_x),
+                             wl_fixed_from_double(view_y),
+                             wl_fixed_from_double(view_w),
+                             wl_fixed_from_double(view_h));
+    } else {
+      if (tile->visible) {
+        tile->visible = false;
+        wl_subsurface_set_position(tile->subsurface, 0, 0);
+        wp_viewport_set_source(tile->viewport, wl_fixed_from_int(0),
+                               wl_fixed_from_int(0), wl_fixed_from_int(1),
+                               wl_fixed_from_int(1));
+      }
+    }
+  }
+}
+
+// Finish the composition transaction, telling DC to composite
+void com_wl_end_transaction(WLWindow* window) {
+  PRINT_ONCE("com_wl_end_transaction\n");
+
+  bool same = window->prevLayers == window->currentLayers;
+
+  if (!same) {
+    struct wl_surface* prev_surface = window->surface;
+
+    for (auto it = window->currentLayers.begin();
+         it != window->currentLayers.end(); ++it) {
+      Surface* surface = &window->surfaces[*it];
+
+      struct wl_surface* next_surface = nullptr;
+      for (auto tile_it = surface->tiles.begin();
+           tile_it != surface->tiles.end(); ++tile_it) {
+        Tile* tile = &tile_it->second;
+
+        wl_subsurface_place_above(tile->subsurface, prev_surface);
+
+        if (!next_surface) {
+          next_surface = tile->surface;
+        }
+      }
+      prev_surface = next_surface;
+    }
+  }
+
+  window->prevLayers.swap(window->currentLayers);
+  window->currentLayers.clear();
+}
+
+// Get a pointer to an EGL symbol
+void* com_wl_get_proc_address(const char* name) {
+  return (void*)eglGetProcAddress(name);
+}
+
+void com_wl_deinit(WLWindow* window) {
+  PRINT_ONCE("com_wl_deinit\n");
+  UNUSED(window);
+}
+
+// Wayland only section --------------------------------------------------------
+
+static void handle_xdg_surface_configure(void* data,
+                                         struct xdg_surface* surface,
+                                         uint32_t serial) {
+  fprintf(stderr, "handle_xdg_surface_configure\n");
+  WLWindow* window = (WLWindow*)data;
+
+  xdg_surface_ack_configure(surface, serial);
+
+  if (window->wait_for_configure && window->fb_surface == EGL_NO_SURFACE) {
+    int width = window->geometry.width;
+    int height = window->geometry.height;
+
+    window->shm_buffer = (SHMBuffer*)calloc(sizeof(SHMBuffer), 1);
+    create_shm_buffer(window->display, window->shm_buffer, 1, 1,
+                      WL_SHM_FORMAT_XRGB8888);
+    set_color(window->shm_buffer->shm_data, 0xff, 0xff, 0xff, 0xff, 1);
+    wl_surface_attach(window->surface, window->shm_buffer->buffer, 0, 0);
+    wl_surface_damage_buffer(window->surface, 0, 0, 1, 1);
+    window->viewport = wp_viewporter_get_viewport(window->display->viewporter,
+                                                  window->surface);
+    wp_viewport_set_destination(window->viewport, width, height);
+    wl_surface_commit(window->surface);
+  }
+  window->wait_for_configure = false;
+}
+
+static const struct xdg_surface_listener xdg_surface_listener = {
+    handle_xdg_surface_configure};
+
+#define WL_ARRAY_FOR_EACH(pos, array, type)                             \
+  for (pos = (type)(array)->data;                                       \
+       (const char*)pos < ((const char*)(array)->data + (array)->size); \
+       (pos)++)
+
+static void handle_xdg_toplevel_configure(void* data,
+                                          struct xdg_toplevel* toplevel,
+                                          int32_t width, int32_t height,
+                                          struct wl_array* states) {
+  fprintf(stderr, "handle_toplevel_configure\n");
+  UNUSED(data);
+  UNUSED(toplevel);
+  UNUSED(width);
+  UNUSED(height);
+  UNUSED(states);
+}
+
+static void handle_xdg_toplevel_close(void* data,
+                                      struct xdg_toplevel* toplevel) {
+  fprintf(stderr, "handle_xdg_toplevel_close\n");
+  UNUSED(toplevel);
+  WLWindow* window = (WLWindow*)data;
+  window->closed = true;
+}
+
+static const struct xdg_toplevel_listener xdg_toplevel_listener = {
+    handle_xdg_toplevel_configure,
+    handle_xdg_toplevel_close,
+};
+
+static void xdg_wm_base_ping(void* data, struct xdg_wm_base* shell,
+                             uint32_t serial) {
+  PRINT_ONCE("xdg_wm_base_ping\n");
+  UNUSED(data);
+  xdg_wm_base_pong(shell, serial);
+}
+
+static const struct xdg_wm_base_listener wm_base_listener = {
+    xdg_wm_base_ping,
+};
+
+static void registry_handle_global(void* data, struct wl_registry* registry,
+                                   uint32_t name, const char* interface,
+                                   uint32_t version) {
+  WLDisplay* d = (WLDisplay*)data;
+
+  if (strcmp(interface, "wl_compositor") == 0) {
+    d->compositor = (struct wl_compositor*)wl_registry_bind(
+        registry, name, &wl_compositor_interface, MIN(version, 4));
+  } else if (strcmp(interface, "wp_viewporter") == 0) {
+    d->viewporter = (struct wp_viewporter*)wl_registry_bind(
+        registry, name, &wp_viewporter_interface, 1);
+  } else if (strcmp(interface, "xdg_wm_base") == 0) {
+    d->wm_base = (struct xdg_wm_base*)wl_registry_bind(
+        registry, name, &xdg_wm_base_interface, 1);
+    xdg_wm_base_add_listener(d->wm_base, &wm_base_listener, NULL);
+  } else if (strcmp(interface, "wl_shm") == 0) {
+    d->shm =
+        (struct wl_shm*)wl_registry_bind(registry, name, &wl_shm_interface, 1);
+  } else if (strcmp(interface, "wl_subcompositor") == 0) {
+    d->subcompositor = (struct wl_subcompositor*)wl_registry_bind(
+        registry, name, &wl_subcompositor_interface, 1);
+  }
+}
+
+static void registry_handle_global_remove(void* data,
+                                          struct wl_registry* registry,
+                                          uint32_t name) {
+  UNUSED(data);
+  UNUSED(registry);
+  UNUSED(name);
+}
+
+static const struct wl_registry_listener registry_listener = {
+    registry_handle_global, registry_handle_global_remove};
+
+void init_wl_registry(WLWindow* window) {
+  fprintf(stderr, "init_wl_registry\n");
+  WLDisplay* display = window->display;
+
+  display->registry = wl_display_get_registry(display->display);
+  wl_registry_add_listener(display->registry, &registry_listener, display);
+
+  wl_display_roundtrip(display->display);
+}
+
+void init_xdg_window(WLWindow* window) {
+  fprintf(stderr, "init_xdg_window\n");
+  window->xdg_surface =
+      xdg_wm_base_get_xdg_surface(window->display->wm_base, window->surface);
+  assert(window->xdg_surface);
+  xdg_surface_add_listener(window->xdg_surface, &xdg_surface_listener, window);
+
+  window->xdg_toplevel = xdg_surface_get_toplevel(window->xdg_surface);
+  xdg_toplevel_add_listener(window->xdg_toplevel, &xdg_toplevel_listener,
+                            window);
+  assert(window->xdg_toplevel);
+}
+
+int os_create_anonymous_file(off_t size) {
+  int fd;
+  int ret;
+
+  fd = memfd_create("compositor-wayland-shared",
+                    MFD_CLOEXEC | MFD_ALLOW_SEALING);
+  if (fd >= 0) {
+    fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK);
+  }
+
+  do {
+    ret = posix_fallocate(fd, 0, size);
+  } while (ret == EINTR);
+  if (ret != 0) {
+    close(fd);
+    errno = ret;
+    return -1;
+  }
+
+  return fd;
+}
+
+int create_shm_buffer(WLDisplay* display, SHMBuffer* buffer, int width,
+                      int height, uint32_t format) {
+  struct wl_shm_pool* pool;
+  int fd, size, stride;
+  void* data;
+
+  stride = width * 4;
+  size = stride * height;
+
+  fd = os_create_anonymous_file(size);
+  if (fd < 0) {
+    fprintf(stderr, "creating a buffer file failed: %s\n", strerror(errno));
+    return -1;
+  }
+
+  data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (data == MAP_FAILED) {
+    fprintf(stderr, "mmap failed: %s\n", strerror(errno));
+    close(fd);
+    return -1;
+  }
+
+  pool = wl_shm_create_pool(display->shm, fd, size);
+  buffer->buffer =
+      wl_shm_pool_create_buffer(pool, 0, width, height, stride, format);
+  wl_shm_pool_destroy(pool);
+  close(fd);
+
+  buffer->shm_data = data;
+
+  return 0;
+}
+}

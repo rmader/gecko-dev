@@ -36,6 +36,7 @@ enum SyncMode {
   Commit = 2,
   Flush = 3,
   Query = 4,
+  Timer = 5,
 };
 
 // The OS compositor representation of a picture cache tile.

@@ -20,6 +20,8 @@ use webrender::{CompositorSurfaceTransform, Transaction, api::*, euclid::point2}
 use webrender::api::units::*;
 #[cfg(target_os = "windows")]
 use compositor_windows as compositor;
+#[cfg(target_os = "linux")]
+use compositor_wayland as compositor;
 use std::{env, f32, process};
 
 // A very hacky integration with DirectComposite. It proxies calls from the compositor
@@ -154,7 +156,7 @@ impl webrender::Compositor for DirectCompositeInterface {
     }
 
     fn deinit(&mut self) {
-        todo!()
+        compositor::deinit(self.window);
     }
 
     fn get_capabilities(&self) -> webrender::CompositorCapabilities {
@@ -374,13 +376,14 @@ enum Sync {
     Commit = 2,
     Flush = 3,
     Query = 4,
+    Timer = 5,
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 6 {
-        println!("USAGE: compositor [native|none] [small|large|scroll] [none|swap|commit|flush|query] width height");
+        println!("USAGE: compositor [native|none] [small|large|scroll] [none|swap|commit|flush|query|timer] width height");
         process::exit(0);
     }
 
@@ -403,7 +406,8 @@ fn main() {
         "commit" => Sync::Commit,
         "flush" => Sync::Flush,
         "query" => Sync::Query,
-        _ => panic!("invalid sync mode [none, swap, commit, flush, query]"),
+        "timer" => Sync::Timer,
+        _ => panic!("invalid sync mode [none, swap, commit, flush, query, timer]"),
     };
 
     let width = args[4].parse().unwrap();
@@ -432,6 +436,7 @@ fn main() {
     };
     let opts = webrender::RendererOptions {
         clear_color: Some(ColorF::new(1.0, 1.0, 1.0, 1.0)),
+        // surface_origin_is_top_left: false,
         debug_flags,
         compositor_config,
         ..webrender::RendererOptions::default()
