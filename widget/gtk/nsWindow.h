@@ -292,6 +292,7 @@ class nsWindow final : public nsBaseWidget {
   bool IsPopup();
   bool IsWaylandPopup();
   bool IsPIPWindow() { return mIsPIPWindow; };
+  bool IsTopLevelWindow() { return mWindowType == eWindowType_toplevel; };
 
   void DispatchDragEvent(mozilla::EventMessage aMsg,
                          const LayoutDeviceIntPoint& aRefPoint, guint aTime);

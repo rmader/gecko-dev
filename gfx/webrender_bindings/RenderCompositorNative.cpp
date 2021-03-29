@@ -27,7 +27,7 @@ RenderCompositorNative::RenderCompositorNative(
     RefPtr<widget::CompositorWidget>&& aWidget, gl::GLContext* aGL)
     : RenderCompositor(std::move(aWidget)),
       mNativeLayerRoot(GetWidget()->GetNativeLayerRoot()) {
-#ifdef XP_MACOSX
+#if defined(XP_MACOSX) || defined(MOZ_WAYLAND)
   auto pool = RenderThread::Get()->SharedSurfacePool();
   if (pool) {
     mSurfacePoolHandle = pool->GetHandleForGL(aGL);
@@ -93,7 +93,11 @@ bool RenderCompositorNative::Resume() { return true; }
 inline layers::WebRenderCompositor RenderCompositorNative::CompositorType()
     const {
   if (gfx::gfxVars::UseWebRenderCompositor()) {
+#if defined(XP_MACOSX)
     return layers::WebRenderCompositor::CORE_ANIMATION;
+#elif defined(MOZ_WAYLAND)
+    return layers::WebRenderCompositor::WAYLAND;
+#endif
   }
   return layers::WebRenderCompositor::DRAW;
 }

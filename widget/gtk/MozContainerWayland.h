@@ -76,5 +76,6 @@ wl_surface* moz_gtk_widget_get_wl_surface(GtkWidget* aWidget);
 void moz_container_wayland_update_opaque_region(MozContainer* container,
                                                 bool aSubtractCorners);
 gboolean moz_container_wayland_can_draw(MozContainer* container);
+int moz_container_wayland_get_scale(MozContainer* container);
 
 #endif /* __MOZ_CONTAINER_WAYLAND_H__ */

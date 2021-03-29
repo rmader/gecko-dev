@@ -10,6 +10,10 @@
 #include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsWindow.h"
 
+#ifdef MOZ_WAYLAND
+#  include "mozilla/layers/NativeLayerWayland.h"
+#endif
+
 namespace mozilla {
 namespace widget {
 
@@ -25,6 +29,7 @@ GtkCompositorWidget::GtkCompositorWidget(
       NS_WARNING("GtkCompositorWidget: We're missing nsWindow!");
     }
     mProvider.Initialize(aWindow);
+    mNativeLayerRoot = nullptr;
   }
 #endif
 #if defined(MOZ_X11)
@@ -140,6 +145,25 @@ LayoutDeviceIntRegion GtkCompositorWidget::GetTransparentRegion() {
   // transparent corners correctly.
   return mWidget->GetTitlebarRect();
 }
+
+#ifdef MOZ_WAYLAND
+bool GtkCompositorWidget::ShouldUseNativeCompositor() {
+  return gfx::gfxVars::UseWebRenderCompositor() && mWidget->IsTopLevelWindow();
+}
+
+RefPtr<mozilla::layers::NativeLayerRoot>
+GtkCompositorWidget::GetNativeLayerRoot() {
+  if (ShouldUseNativeCompositor()) {
+    if (!mNativeLayerRoot) {
+      MOZ_ASSERT(mWidget && mWidget->GetMozContainer());
+      mNativeLayerRoot = NativeLayerRootWayland::CreateForMozContainer(
+          mWidget->GetMozContainer());
+    }
+    return mNativeLayerRoot;
+  }
+  return nullptr;
+}
+#endif
 
 }  // namespace widget
 }  // namespace mozilla

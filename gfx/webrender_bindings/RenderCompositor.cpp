@@ -22,8 +22,14 @@
 #  include "mozilla/webrender/RenderCompositorANGLE.h"
 #endif
 
-#if defined(MOZ_WAYLAND) || defined(MOZ_WIDGET_ANDROID)
+#ifdef MOZ_WIDGET_ANDROID
 #  include "mozilla/webrender/RenderCompositorEGL.h"
+#endif
+
+#ifdef MOZ_WAYLAND
+#  include "mozilla/webrender/RenderCompositorEGL.h"
+#  include "mozilla/webrender/RenderCompositorNative.h"
+#  include "mozilla/widget/GtkCompositorWidget.h"
 #endif
 
 #ifdef XP_MACOSX
@@ -175,6 +181,12 @@ UniquePtr<RenderCompositor> RenderCompositor::Create(
 #ifdef XP_WIN
   if (gfx::gfxVars::UseWebRenderANGLE()) {
     return RenderCompositorANGLE::Create(std::move(aWidget), aError);
+  }
+#endif
+
+#if defined(MOZ_WAYLAND)
+  if (aWidget->AsX11()->ShouldUseNativeCompositor()) {
+    return RenderCompositorNativeOGL::Create(std::move(aWidget), aError);
   }
 #endif
 

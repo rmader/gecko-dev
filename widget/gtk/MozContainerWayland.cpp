@@ -582,3 +582,11 @@ void moz_container_wayland_update_opaque_region(MozContainer* container,
 gboolean moz_container_wayland_can_draw(MozContainer* container) {
   return container ? container->wl_container.ready_to_draw : false;
 }
+
+int moz_container_wayland_get_scale(MozContainer* container) {
+  MozContainerWayland* wl_container = &container->wl_container;
+  MutexAutoLock lock(*wl_container->container_lock);
+
+  nsWindow* window = moz_container_get_nsWindow(container);
+  return window ? window->GdkScaleFactor() : 1;
+}

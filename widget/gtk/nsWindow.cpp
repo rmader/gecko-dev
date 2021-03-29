@@ -5403,7 +5403,8 @@ void nsWindow::HideWaylandWindow() {
 void nsWindow::WaylandStartVsync() {
 #ifdef MOZ_WAYLAND
   // only use for toplevel windows for now - see bug 1619246
-  if (!gUseWaylandVsync || mWindowType != eWindowType_toplevel) {
+  if (!gUseWaylandVsync || !IsTopLevelWindow() ||
+      gfx::gfxVars::UseWebRenderCompositor()) {
     return;
   }
 

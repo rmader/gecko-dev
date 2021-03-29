@@ -30,6 +30,7 @@ namespace layers {
 
 class NativeLayer;
 class NativeLayerCA;
+class NativeLayerWayland;
 class NativeLayerRootSnapshotter;
 class SurfacePoolHandle;
 
@@ -117,6 +118,7 @@ class NativeLayer {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NativeLayer)
 
   virtual NativeLayerCA* AsNativeLayerCA() { return nullptr; }
+  virtual NativeLayerWayland* AsNativeLayerWayland() { return nullptr; }
 
   // The size and opaqueness of a layer are supplied during layer creation and
   // never change.
