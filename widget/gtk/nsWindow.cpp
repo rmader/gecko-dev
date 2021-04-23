@@ -18,6 +18,7 @@
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_apz.h"
 #include "mozilla/StaticPrefs_ui.h"
+#include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TimeStamp.h"
@@ -850,13 +851,13 @@ float nsWindow::GetDPI() {
 }
 
 double nsWindow::GetDefaultScaleInternal() {
-  return GdkScaleFactor() * gfxPlatformGtk::GetFontScaleFactor();
+  return BufferScaleFactor() * gfxPlatformGtk::GetFontScaleFactor();
 }
 
 DesktopToLayoutDeviceScale nsWindow::GetDesktopToDeviceScale() {
 #ifdef MOZ_WAYLAND
   if (GdkIsWaylandDisplay()) {
-    return DesktopToLayoutDeviceScale(GdkScaleFactor());
+    return DesktopToLayoutDeviceScale(BufferScaleFactor());
   }
 #endif
 
@@ -1563,8 +1564,8 @@ void nsWindow::NativeMoveResizeWaylandPopupCB(const GdkRectangle* aFinalSize,
   int32_t newHeight = NSToIntRound(scale * newBounds.height);
 
   // Convert newBounds to "absolute" coordinates (relative to toplevel)
-  newBounds.x += x_parent * GdkScaleFactor();
-  newBounds.y += y_parent * GdkScaleFactor();
+  newBounds.x += x_parent * BufferScaleFactor();
+  newBounds.y += y_parent * BufferScaleFactor();
 
   LOG(("  new mBounds  x=%d y=%d width=%d height=%d x_parent=%d y_parent=%d\n",
        newBounds.x, newBounds.y, newWidth, newHeight, x_parent, y_parent));
@@ -1684,7 +1685,7 @@ void nsWindow::NativeMoveResizeWaylandPopup(GdkPoint* aPosition,
   int32_t p2a;
   double devPixelsPerCSSPixel = StaticPrefs::layout_css_devPixelsPerPx();
   if (devPixelsPerCSSPixel > 0.0) {
-    p2a = AppUnitsPerCSSPixel() / devPixelsPerCSSPixel * GdkScaleFactor();
+    p2a = AppUnitsPerCSSPixel() / devPixelsPerCSSPixel * BufferScaleFactor();
   } else {
     p2a = AppUnitsPerCSSPixel() / gfxPlatformGtk::GetFontScaleFactor();
   }
@@ -2544,7 +2545,7 @@ void* nsWindow::GetNativeData(uint32_t aDataType) {
 #ifdef MOZ_WAYLAND
       if (mContainer) {
         return moz_container_wayland_get_egl_window(mContainer,
-                                                    GdkScaleFactor());
+            BufferScaleFactor());
       }
 #endif
       return nullptr;
@@ -2886,7 +2887,7 @@ gboolean nsWindow::OnExposeEvent(cairo_t* cr) {
     return FALSE;
   }
 
-  gint scale = GdkScaleFactor();
+  double scale = BufferScaleFactor();
   LayoutDeviceIntRegion region = exposeRegion;
   region.ScaleRoundOut(scale, scale);
 
@@ -3227,6 +3228,9 @@ void nsWindow::OnSizeAllocate(GtkAllocation* aAllocation) {
   LOG(("nsWindow::OnSizeAllocate [%p] %d,%d -> %d x %d\n", (void*)this,
        aAllocation->x, aAllocation->y, aAllocation->width,
        aAllocation->height));
+  fprintf(stderr, "nsWindow::OnSizeAllocate [%p] %d,%d -> %d x %d\n", (void*)this,
+       aAllocation->x, aAllocation->y, aAllocation->width,
+       aAllocation->height);
 
   // Client offset are updated by _NET_FRAME_EXTENTS on X11 when system titlebar
   // is enabled. In either cases (Wayland or system titlebar is off on X11)
@@ -3263,12 +3267,11 @@ void nsWindow::OnSizeAllocate(GtkAllocation* aAllocation) {
 
   mBounds.SizeTo(size);
 
-#ifdef MOZ_X11
   // Notify the GtkCompositorWidget of a ClientSizeChange
   if (mCompositorWidgetDelegate) {
+    fprintf(stderr, "OnSizeAllocate NotifyClientSizeChanged %d %d\n", GetClientSize().width, GetClientSize().height);
     mCompositorWidgetDelegate->NotifyClientSizeChanged(GetClientSize());
   }
-#endif
 
   // Gecko permits running nested event loops during processing of events,
   // GtkWindow callers of gtk_widget_size_allocate expect the signal
@@ -5294,13 +5297,11 @@ void nsWindow::NativeResize() {
     gdk_window_resize(mGdkWindow, size.width, size.height);
   }
 
-#ifdef MOZ_X11
   // Notify the GtkCompositorWidget of a ClientSizeChange
   // This is different than OnSizeAllocate to catch initial sizing
   if (mCompositorWidgetDelegate) {
     mCompositorWidgetDelegate->NotifyClientSizeChanged(GetClientSize());
   }
-#endif
 
   // Does it need to be shown because bounds were previously insane?
   if (mNeedsShow && mIsShown) {
@@ -7916,11 +7917,8 @@ gint nsWindow::GdkScaleFactor() {
     }
   }
 
-  // Available as of GTK 3.10+
-  static auto sGdkWindowGetScaleFactorPtr =
-      (gint(*)(GdkWindow*))dlsym(RTLD_DEFAULT, "gdk_window_get_scale_factor");
-  if (sGdkWindowGetScaleFactorPtr && scaledGdkWindow) {
-    mWindowScaleFactor = (*sGdkWindowGetScaleFactorPtr)(scaledGdkWindow);
+  if (scaledGdkWindow) {
+    mWindowScaleFactor = gdk_window_get_scale_factor(scaledGdkWindow);
     mWindowScaleFactorChanged = false;
   } else {
     mWindowScaleFactor = ScreenHelperGTK::GetGTKMonitorScaleFactor();
@@ -7929,57 +7927,71 @@ gint nsWindow::GdkScaleFactor() {
   return mWindowScaleFactor;
 }
 
+double nsWindow::BufferScaleFactor() {
+#ifdef MOZ_WAYLAND
+  if (GdkIsWaylandDisplay() &&
+      StaticPrefs::widget_wayland_fractional_buffer_scale() > 0 &&
+      WaylandDisplayGet()->GetViewporter()) {
+    double scale = StaticPrefs::widget_wayland_fractional_buffer_scale();
+    scale = std::max(scale, 0.5);
+    scale = std::min(scale, 8.0);
+    return scale;
+  }
+#endif
+  return GdkScaleFactor();
+}
+
 gint nsWindow::DevicePixelsToGdkCoordRoundUp(int pixels) {
-  gint scale = GdkScaleFactor();
-  return (pixels + scale - 1) / scale;
+  double scale = BufferScaleFactor();
+  return ceil((pixels + scale - 1) / scale);
 }
 
 gint nsWindow::DevicePixelsToGdkCoordRoundDown(int pixels) {
-  gint scale = GdkScaleFactor();
-  return pixels / scale;
+  double scale = BufferScaleFactor();
+  return floor(pixels / scale);
 }
 
 GdkPoint nsWindow::DevicePixelsToGdkPointRoundDown(LayoutDeviceIntPoint point) {
-  gint scale = GdkScaleFactor();
-  return {point.x / scale, point.y / scale};
+  double scale = BufferScaleFactor();
+  return {int(point.x / scale), int(point.y / scale)};
 }
 
 GdkRectangle nsWindow::DevicePixelsToGdkRectRoundOut(LayoutDeviceIntRect rect) {
-  gint scale = GdkScaleFactor();
-  int x = rect.x / scale;
-  int y = rect.y / scale;
-  int right = (rect.x + rect.width + scale - 1) / scale;
-  int bottom = (rect.y + rect.height + scale - 1) / scale;
+  double scale = BufferScaleFactor();
+  int x = floor(rect.x / scale);
+  int y = floor(rect.y / scale);
+  int right = ceil((rect.x + rect.width + scale - 1) / scale);
+  int bottom = ceil((rect.y + rect.height + scale - 1) / scale);
   return {x, y, right - x, bottom - y};
 }
 
 GdkRectangle nsWindow::DevicePixelsToGdkSizeRoundUp(
     LayoutDeviceIntSize pixelSize) {
-  gint scale = GdkScaleFactor();
-  gint width = (pixelSize.width + scale - 1) / scale;
-  gint height = (pixelSize.height + scale - 1) / scale;
+  double scale = BufferScaleFactor();
+  gint width = ceil((pixelSize.width + scale - 1) / scale);
+  gint height = ceil((pixelSize.height + scale - 1) / scale);
   return {0, 0, width, height};
 }
 
 int nsWindow::GdkCoordToDevicePixels(gint coord) {
-  return coord * GdkScaleFactor();
+  return coord * BufferScaleFactor();
 }
 
 LayoutDeviceIntPoint nsWindow::GdkEventCoordsToDevicePixels(gdouble x,
                                                             gdouble y) {
-  gint scale = GdkScaleFactor();
+  double scale = BufferScaleFactor();
   return LayoutDeviceIntPoint::Floor(x * scale, y * scale);
 }
 
 LayoutDeviceIntPoint nsWindow::GdkPointToDevicePixels(GdkPoint point) {
-  gint scale = GdkScaleFactor();
-  return LayoutDeviceIntPoint(point.x * scale, point.y * scale);
+  double scale = BufferScaleFactor();
+  return LayoutDeviceIntPoint::Floor(point.x * scale, point.y * scale);
 }
 
 LayoutDeviceIntRect nsWindow::GdkRectToDevicePixels(GdkRectangle rect) {
-  gint scale = GdkScaleFactor();
-  return LayoutDeviceIntRect(rect.x * scale, rect.y * scale, rect.width * scale,
-                             rect.height * scale);
+  double scale = BufferScaleFactor();
+  return LayoutDeviceIntRect::RoundIn(rect.x * scale, rect.y * scale,
+                                      rect.width * scale, rect.height * scale);
 }
 
 nsresult nsWindow::SynthesizeNativeMouseEvent(
@@ -8757,9 +8769,9 @@ LayoutDeviceIntRect nsWindow::GetMozContainerSize() {
   if (mContainer) {
     GtkAllocation allocation;
     gtk_widget_get_allocation(GTK_WIDGET(mContainer), &allocation);
-    int scale = GdkScaleFactor();
-    size.width = allocation.width * scale;
-    size.height = allocation.height * scale;
+    double scale = BufferScaleFactor();
+    size.width = floor(allocation.width * scale);
+    size.height = floor(allocation.height * scale);
   }
   return size;
 }

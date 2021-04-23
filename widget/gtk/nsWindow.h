@@ -369,6 +369,7 @@ class nsWindow final : public nsBaseWidget {
 
   // HiDPI scale conversion
   gint GdkScaleFactor();
+  double BufferScaleFactor();
 
   // To GDK
   gint DevicePixelsToGdkCoordRoundUp(int pixels);
