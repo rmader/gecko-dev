@@ -6,10 +6,14 @@
 #include "GtkCompositorWidget.h"
 
 #include "mozilla/layers/CompositorThread.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/widget/InProcessCompositorWidget.h"
 #include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsWindow.h"
-#include "mozilla/X11Util.h"
+
+#ifdef MOZ_X11
+#  include "mozilla/X11Util.h"
+#endif
 
 #ifdef MOZ_WAYLAND
 #  include "mozilla/layers/NativeLayerWayland.h"
@@ -23,18 +27,34 @@ GtkCompositorWidget::GtkCompositorWidget(
     const layers::CompositorOptions& aOptions, nsWindow* aWindow)
     : CompositorWidget(aOptions),
       mWidget(aWindow),
-      mClientSize("GtkCompositorWidget::mClientSize") {
+      mClientSize("GtkCompositorWidget::mClientSize")
 #if defined(MOZ_WAYLAND)
-  if (!aInitData.IsX11Display()) {
+      ,
+      mNativeLayerRoot(nullptr)
+#endif
+{
+#if defined(MOZ_WAYLAND)
+  if (GdkIsWaylandDisplay()) {
     if (!aWindow) {
       NS_WARNING("GtkCompositorWidget: We're missing nsWindow!");
     }
-    mProvider.Initialize(aWindow);
-    mNativeLayerRoot = nullptr;
+    // by default, use multi-buffered backend for SW-WR and single-buffered
+    // for Basic
+    int useMultiBufferedSoftwareBackend =
+        GetCompositorOptions().UseSoftwareWebRender();
+    static int forceBackend =
+        Preferences::GetInt("widget.wayland.software-backend", 0);
+    if (forceBackend == 1) {
+      useMultiBufferedSoftwareBackend = false;
+    } else if (forceBackend == 2) {
+      useMultiBufferedSoftwareBackend = true;
+    }
+
+    mProvider.Initialize(aWindow, useMultiBufferedSoftwareBackend);
   }
 #endif
 #if defined(MOZ_X11)
-  if (aInitData.IsX11Display()) {
+  if (GdkIsX11Display()) {
     mXWindow = (Window)aInitData.XWindow();
 
     // Grab the window's visual and depth
@@ -71,6 +91,18 @@ GtkCompositorWidget::StartRemoteDrawingInRegion(
 void GtkCompositorWidget::EndRemoteDrawingInRegion(
     gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
   mProvider.EndRemoteDrawingInRegion(aDrawTarget, aInvalidRegion);
+}
+
+void GtkCompositorWidget::PrepareBufferForFrame() {
+  return mProvider.PrepareBufferForFrame();
+}
+
+size_t GtkCompositorWidget::GetBufferAge() const {
+  return mProvider.GetBufferAge();
+}
+
+bool GtkCompositorWidget::ShouldDrawPreviousPartialPresentRegions() {
+  return mProvider.ShouldDrawPreviousPartialPresentRegions();
 }
 
 nsIWidget* GtkCompositorWidget::RealWidget() { return mWidget; }
