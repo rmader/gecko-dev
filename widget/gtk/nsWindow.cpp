@@ -5597,7 +5597,6 @@ nsresult nsWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
 #endif
 #ifdef MOZ_WAYLAND
   if (GdkIsWaylandDisplay()) {
-    mSurfaceProvider.Initialize(this);
     WaylandStartVsync();
   }
 #endif
