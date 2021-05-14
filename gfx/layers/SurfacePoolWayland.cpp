@@ -12,7 +12,7 @@ namespace mozilla::layers {
 using gl::GLContextEGL;
 
 NativeSurfaceWayland::NativeSurfaceWayland(const IntSize& aSize, GLContext* aGL)
-    : mGL(aGL) {
+    : mGL(aGL), mEGLWindow(nullptr), mEGLSurface(nullptr) {
   wl_compositor* compositor = widget::WaylandDisplayGet()->GetCompositor();
   mWlSurface = wl_compositor_create_surface(compositor);
 
@@ -24,18 +24,26 @@ NativeSurfaceWayland::NativeSurfaceWayland(const IntSize& aSize, GLContext* aGL)
   MOZ_ASSERT(viewporter);
   mViewport = wp_viewporter_get_viewport(viewporter, mWlSurface);
 
-  mEGLWindow = wl_egl_window_create(mWlSurface, aSize.width, aSize.height);
+  if (mGL) {
+    mEGLWindow = wl_egl_window_create(mWlSurface, aSize.width, aSize.height);
 
-  GLContextEGL* egl = GLContextEGL::Cast(mGL);
-  mEGLSurface =
-      egl->mEgl->fCreateWindowSurface(egl->mConfig, mEGLWindow, nullptr);
-  MOZ_ASSERT(mEGLSurface != EGL_NO_SURFACE);
+    GLContextEGL* egl = GLContextEGL::Cast(mGL);
+    mEGLSurface =
+        egl->mEgl->fCreateWindowSurface(egl->mConfig, mEGLWindow, nullptr);
+    MOZ_ASSERT(mEGLSurface != EGL_NO_SURFACE);
+  } else {
+    mWaylandBuffer =
+        WaylandShmBuffer::Create(widget::WaylandDisplayGet(),
+                                 LayoutDeviceIntSize::FromUnknownSize(aSize));
+  }
 }
 
 NativeSurfaceWayland::~NativeSurfaceWayland() {
-  GLContextEGL* egl = GLContextEGL::Cast(mGL);
-  egl->mEgl->fDestroySurface(mEGLSurface);
-  g_clear_pointer(&mEGLWindow, wl_egl_window_destroy);
+  if (mGL) {
+    GLContextEGL* egl = GLContextEGL::Cast(mGL);
+    egl->mEgl->fDestroySurface(mEGLSurface);
+    g_clear_pointer(&mEGLWindow, wl_egl_window_destroy);
+  }
   g_clear_pointer(&mViewport, wp_viewport_destroy);
   g_clear_pointer(&mWlSurface, wl_surface_destroy);
 }

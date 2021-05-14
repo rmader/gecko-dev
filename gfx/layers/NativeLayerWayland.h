@@ -62,7 +62,7 @@ class NativeLayerRootWayland : public NativeLayerRoot {
   ~NativeLayerRootWayland() = default;
 
   void EnsureSurfaceInitialized();
-  void EnsureShowLayer(const RefPtr<NativeLayerWayland>& aLayer);
+  bool EnsureShowLayer(const RefPtr<NativeLayerWayland>& aLayer);
   void EnsureHideLayer(const RefPtr<NativeLayerWayland>& aLayer);
   void UnmapLayer(const RefPtr<NativeLayerWayland>& aLayer);
 

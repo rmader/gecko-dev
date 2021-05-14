@@ -10,17 +10,20 @@
 
 #include "mozilla/layers/SurfacePool.h"
 #include "mozilla/widget/nsWaylandDisplay.h"
+#include "mozilla/widget/WaylandShmBuffer.h"
 
 namespace mozilla::layers {
 
 using gfx::IntSize;
 using gl::GLContext;
+using widget::WaylandShmBuffer;
 
 class NativeSurfaceWayland {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NativeSurfaceWayland);
 
   EGLSurface GetEGLSurface() { return mEGLSurface; }
+  RefPtr<WaylandShmBuffer> GetShmBuffer() { return mWaylandBuffer; }
 
   struct wl_surface* mWlSurface = nullptr;
   struct wl_subsurface* mWlSubsurface = nullptr;
@@ -34,6 +37,7 @@ class NativeSurfaceWayland {
   GLContext* mGL = nullptr;
   struct wl_egl_window* mEGLWindow = nullptr;
   EGLSurface mEGLSurface = nullptr;
+  RefPtr<WaylandShmBuffer> mWaylandBuffer;
 };
 
 class SurfacePoolWayland final : public SurfacePool {

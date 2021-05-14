@@ -39,13 +39,15 @@ void NativeLayerRootWayland::EnsureSurfaceInitialized() {
     return;
   }
 
-  mShmBuffer = widget::WaylandShmBuffer::Create(widget::WaylandDisplayGet(),
-                                                LayoutDeviceIntSize(1, 1));
-  mShmBuffer->Clear();
-
   wl_surface* wlSurface = moz_container_wayland_surface_lock(mContainer);
-  mShmBuffer->AttachAndCommit(wlSurface);
-  moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+  if (wlSurface) {
+    mShmBuffer = widget::WaylandShmBuffer::Create(widget::WaylandDisplayGet(),
+                                                  LayoutDeviceIntSize(1, 1));
+    mShmBuffer->Clear();
+
+    mShmBuffer->AttachAndCommit(wlSurface);
+    moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+  }
 }
 
 already_AddRefed<NativeLayer> NativeLayerRootWayland::CreateLayer(
@@ -83,15 +85,19 @@ void NativeLayerRootWayland::RemoveLayer(NativeLayer* aLayer) {
   mSublayers.RemoveElement(layerWayland);
 }
 
-void NativeLayerRootWayland::EnsureShowLayer(
+bool NativeLayerRootWayland::EnsureShowLayer(
     const RefPtr<NativeLayerWayland>& aLayer) {
   if (aLayer->mIsShown) {
-    return;
+    return true;
   }
 
   RefPtr<NativeSurfaceWayland> nativeSurface = aLayer->mNativeSurface;
   if (!nativeSurface->mWlSubsurface) {
     wl_surface* wlSurface = moz_container_wayland_surface_lock(mContainer);
+    if (!wlSurface) {
+      return false;
+    }
+
     wl_subcompositor* subcompositor =
         widget::WaylandDisplayGet()->GetSubcompositor();
 
@@ -102,6 +108,7 @@ void NativeLayerRootWayland::EnsureShowLayer(
   }
 
   aLayer->mIsShown = true;
+  return true;
 }
 
 void NativeLayerRootWayland::EnsureHideLayer(
@@ -120,8 +127,10 @@ void NativeLayerRootWayland::EnsureHideLayer(
   wl_surface_commit(nativeSurface->mWlSurface);
 
   wl_surface* wlSurface = moz_container_wayland_surface_lock(mContainer);
-  wl_subsurface_place_below(nativeSurface->mWlSubsurface, wlSurface);
-  moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+  if (wlSurface) {
+    wl_subsurface_place_below(nativeSurface->mWlSubsurface, wlSurface);
+    moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+  }
 
   aLayer->mIsShown = false;
 }
@@ -192,7 +201,9 @@ void NativeLayerRootWayland::SetLayers(
 
     if (roundf(surfaceRectClipped.width) > 0 &&
         roundf(surfaceRectClipped.height) > 0) {
-      EnsureShowLayer(layer);
+      if (!EnsureShowLayer(layer)) {
+        continue;
+      }
     } else {
       EnsureHideLayer(layer);
       continue;
@@ -215,8 +226,9 @@ void NativeLayerRootWayland::SetLayers(
     bufferClip.width /= scaleX;
     bufferClip.height /= scaleY;
 
-    // WR uses top-left coordinates but our buffers are in bottom-left ones
-    if (layer->SurfaceIsFlipped()) {
+    // HW-WR uses top-left coordinates but our buffers are in bottom-left ones
+    if ((nativeSurface->GetEGLSurface() && layer->SurfaceIsFlipped()) ||
+        (!nativeSurface->GetEGLSurface() && !layer->SurfaceIsFlipped())) {
       wl_surface_set_buffer_transform(nativeSurface->mWlSurface,
                                       WL_OUTPUT_TRANSFORM_NORMAL);
     } else {
@@ -244,8 +256,10 @@ void NativeLayerRootWayland::SetLayers(
       previousSurface = nativeSurface->mWlSurface;
     } else {
       wl_surface* wlSurface = moz_container_wayland_surface_lock(mContainer);
-      wl_subsurface_place_above(nativeSurface->mWlSubsurface, wlSurface);
-      moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+      if (wlSurface) {
+        wl_subsurface_place_above(nativeSurface->mWlSubsurface, wlSurface);
+        moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+      }
       previousSurface = nativeSurface->mWlSurface;
     }
   }
@@ -273,26 +287,35 @@ bool NativeLayerRootWayland::CommitToScreen() {
     for (RefPtr<NativeLayerWayland>& layer : mSublayers) {
       RefPtr<NativeSurfaceWayland> nativeSurface = layer->mNativeSurface;
       if (!layer->mDirtyRegion.IsEmpty()) {
-        GLContextEGL* gl = GLContextEGL::Cast(layer->mSurfacePoolHandle->gl());
-        auto egl = gl->mEgl;
+        if (nativeSurface->GetEGLSurface()) {
+          GLContextEGL* gl =
+              GLContextEGL::Cast(layer->mSurfacePoolHandle->gl());
+          auto egl = gl->mEgl;
 
-        gl->SetEGLSurfaceOverride(nativeSurface->GetEGLSurface());
-        gl->MakeCurrent();
+          gl->SetEGLSurfaceOverride(nativeSurface->GetEGLSurface());
+          gl->MakeCurrent();
 
-        egl->fSwapInterval(0);
-        egl->fSwapBuffers(nativeSurface->GetEGLSurface());
+          egl->fSwapInterval(0);
+          egl->fSwapBuffers(nativeSurface->GetEGLSurface());
 
-        gl->SetEGLSurfaceOverride(nullptr);
-        gl->MakeCurrent();
-
+          gl->SetEGLSurfaceOverride(nullptr);
+          gl->MakeCurrent();
+        } else {
+          wl_surface_damage_buffer(nativeSurface->mWlSurface, 0, 0, INT_MAX,
+                                   INT_MAX);
+          nativeSurface->GetShmBuffer()->AttachAndCommit(
+              nativeSurface->mWlSurface);
+        }
         layer->mDirtyRegion.SetEmpty();
       } else {
         wl_surface_commit(nativeSurface->mWlSurface);
       }
     }
 
-    wl_surface_commit(wlSurface);
-    moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+    if (wlSurface) {
+      wl_surface_commit(wlSurface);
+      moz_container_wayland_surface_unlock(mContainer, &wlSurface);
+    }
   }
 
   EnsureSurfaceInitialized();
@@ -440,8 +463,17 @@ IntRect NativeLayerWayland::CurrentSurfaceDisplayRect() {
 RefPtr<DrawTarget> NativeLayerWayland::NextSurfaceAsDrawTarget(
     const IntRect& aDisplayRect, const IntRegion& aUpdateRegion,
     BackendType aBackendType) {
-  MOZ_ASSERT(false);
-  return nullptr;
+  MutexAutoLock lock(mMutex);
+
+  mValidRect = IntRect(aDisplayRect);
+  mDirtyRegion = IntRegion(aUpdateRegion);
+
+  if (!mNativeSurface) {
+    mNativeSurface = mSurfacePoolHandle->ObtainSurfaceFromPool(mSize);
+  }
+
+  RefPtr<DrawTarget> dt = mNativeSurface->GetShmBuffer()->Lock();
+  return dt.forget();
 }
 
 Maybe<GLuint> NativeLayerWayland::NextSurfaceAsFramebuffer(
@@ -466,9 +498,11 @@ Maybe<GLuint> NativeLayerWayland::NextSurfaceAsFramebuffer(
 void NativeLayerWayland::NotifySurfaceReady() {
   MutexAutoLock lock(mMutex);
 
-  GLContextEGL* gl = GLContextEGL::Cast(mSurfacePoolHandle->gl());
-  gl->SetEGLSurfaceOverride(nullptr);
-  gl->MakeCurrent();
+  if (mNativeSurface->GetEGLSurface()) {
+    GLContextEGL* gl = GLContextEGL::Cast(mSurfacePoolHandle->gl());
+    gl->SetEGLSurfaceOverride(nullptr);
+    gl->MakeCurrent();
+  }
 }
 
 void NativeLayerWayland::DiscardBackbuffers() {}
