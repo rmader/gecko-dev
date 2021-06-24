@@ -5993,6 +5993,7 @@
 #define LOCAL_EGL_CONDITION_SATISFIED_NV                     0x30EC
 #define LOCAL_EGL_CONFIG_CAVEAT                              0x3027
 #define LOCAL_EGL_CONFIG_ID                                  0x3028
+#define LOCAL_EGL_CONFIG_SELECT_GROUP_EXT                    0x34C0
 #define LOCAL_EGL_CONFORMANT                                 0x3042
 #define LOCAL_EGL_CONFORMANT_KHR                             0x3042
 #define LOCAL_EGL_CONSUMER_ACQUIRE_TIMEOUT_USEC_KHR          0x321E
