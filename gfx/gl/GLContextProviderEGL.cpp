@@ -880,13 +880,13 @@ static const EGLint kEGLConfigAttribsRGBA32[] = {
     LOCAL_EGL_BLUE_SIZE,    8,
     LOCAL_EGL_ALPHA_SIZE,   8};
 
-bool CreateConfig(EglDisplay& egl, EGLConfig* aConfig, int32_t depth,
+bool CreateConfig(EglDisplay& aEgl, EGLConfig* aConfig, int32_t aDepth,
                   bool aEnableDepthBuffer, bool aUseGles, int aVisual) {
   EGLConfig configs[64];
   std::vector<EGLint> attribs;
   EGLint ncfg = ArrayLength(configs);
 
-  switch (depth) {
+  switch (aDepth) {
     case 16:
       for (const auto& cur : kEGLConfigAttribsRGB16) {
         attribs.push_back(cur);
@@ -915,7 +915,7 @@ bool CreateConfig(EglDisplay& egl, EGLConfig* aConfig, int32_t depth,
     attribs.push_back(cur);
   }
 
-  if (!egl.fChooseConfig(attribs.data(), configs, ncfg, &ncfg) || ncfg < 1) {
+  if (!aEgl.fChooseConfig(attribs.data(), configs, ncfg, &ncfg) || ncfg < 1) {
     return false;
   }
 
@@ -924,28 +924,41 @@ bool CreateConfig(EglDisplay& egl, EGLConfig* aConfig, int32_t depth,
   for (int j = 0; j < ncfg; ++j) {
     EGLConfig config = configs[j];
     EGLint r, g, b, a;
-    if (egl.fGetConfigAttrib(config, LOCAL_EGL_RED_SIZE, &r) &&
-        egl.fGetConfigAttrib(config, LOCAL_EGL_GREEN_SIZE, &g) &&
-        egl.fGetConfigAttrib(config, LOCAL_EGL_BLUE_SIZE, &b) &&
-        egl.fGetConfigAttrib(config, LOCAL_EGL_ALPHA_SIZE, &a) &&
-        ((depth == 16 && r == 5 && g == 6 && b == 5) ||
-         (depth == 24 && r == 8 && g == 8 && b == 8) ||
-         (depth == 32 && r == 8 && g == 8 && b == 8 && a == 8))) {
+    if (aEgl.fGetConfigAttrib(config, LOCAL_EGL_RED_SIZE, &r) &&
+        aEgl.fGetConfigAttrib(config, LOCAL_EGL_GREEN_SIZE, &g) &&
+        aEgl.fGetConfigAttrib(config, LOCAL_EGL_BLUE_SIZE, &b) &&
+        aEgl.fGetConfigAttrib(config, LOCAL_EGL_ALPHA_SIZE, &a) &&
+        ((aDepth == 16 && r == 5 && g == 6 && b == 5) ||
+         (aDepth == 24 && r == 8 && g == 8 && b == 8) ||
+         (aDepth == 32 && r == 8 && g == 8 && b == 8 && a == 8))) {
       EGLint z;
       if (aEnableDepthBuffer) {
-        if (!egl.fGetConfigAttrib(config, LOCAL_EGL_DEPTH_SIZE, &z) ||
+        if (!aEgl.fGetConfigAttrib(config, LOCAL_EGL_DEPTH_SIZE, &z) ||
             z != 24) {
           continue;
         }
       }
-      if (kIsX11 && aVisual) {
-        int vis;
-        if (!egl.fGetConfigAttrib(config, LOCAL_EGL_NATIVE_VISUAL_ID, &vis) ||
-            aVisual != vis) {
-          if (!fallbackConfig) {
-            fallbackConfig = Some(config);
+      if (kIsX11 && GdkIsX11Display()) {
+        if (aDepth == 32 && aEgl.mLib->IsExtensionSupported(
+                                EGLLibExtension::EXT_config_select_group)) {
+          EGLint group;
+          if (!aEgl.fGetConfigAttrib(config, LOCAL_EGL_CONFIG_SELECT_GROUP_EXT,
+                                     &group) ||
+              group == 0) {
+            continue;
           }
-          continue;
+        }
+
+        if (aVisual) {
+          int vis;
+          if (!aEgl.fGetConfigAttrib(config, LOCAL_EGL_NATIVE_VISUAL_ID,
+                                     &vis) ||
+              aVisual != vis) {
+            if (!fallbackConfig) {
+              fallbackConfig = Some(config);
+            }
+            continue;
+          }
         }
       }
       *aConfig = config;
@@ -1123,6 +1136,19 @@ bool GLContextEGL::FindVisual(bool aUseWebRender, bool useAlpha,
     gfxCriticalNote
         << "GLContextEGL::FindVisual(): Failed to load EGL library!";
     return false;
+  }
+
+  if (useAlpha) {
+    nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+    nsString adapterDriverVendor;
+    gfxInfo->GetAdapterDriverVendor(adapterDriverVendor);
+    bool isMesa = adapterDriverVendor.Find("mesa") != -1;
+    bool hasConfigSelectGroup = egl->mLib->IsExtensionSupported(
+        EGLLibExtension::EXT_config_select_group);
+
+    if (isMesa && !hasConfigSelectGroup) {
+      return false;
+    }
   }
 
   EGLConfig config;

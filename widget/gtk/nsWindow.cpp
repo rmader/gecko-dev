@@ -5011,37 +5011,22 @@ bool nsWindow::ConfigureX11GLVisual(bool aUseAlpha) {
   // buffer, as well as an alpha channel if transparency is requested. This
   // must be done before the widget is realized.
   bool useWebRender = gfx::gfxVars::UseWebRender();
-  auto* screen = gtk_widget_get_screen(mShell);
   int visualId = 0;
-  bool haveVisual;
+  bool haveVisual = false;
 
-  nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
-  nsString adapterDriverVendor;
-  gfxInfo->GetAdapterDriverVendor(adapterDriverVendor);
-  bool isMesa = adapterDriverVendor.Find("mesa") != -1;
-
-  // See https://bugzilla.mozilla.org/show_bug.cgi?id=1663003
-  // We need to use GLX to get visual even on EGL until
-  // EGL can provide compositable visual:
-  // https://gitlab.freedesktop.org/mesa/mesa/-/issues/149
-  if (!gfxVars::UseEGL() || isMesa) {
-    auto* display = GDK_DISPLAY_XDISPLAY(gtk_widget_get_display(mShell));
-    int screenNumber = GDK_SCREEN_XNUMBER(screen);
-    haveVisual = GLContextGLX::FindVisual(display, screenNumber, useWebRender,
-                                          aUseAlpha || useWebRender, &visualId);
-  } else {
+  if (gfxVars::UseEGL()) {
     haveVisual = GLContextEGL::FindVisual(useWebRender,
                                           aUseAlpha || useWebRender, &visualId);
   }
 
   GdkVisual* gdkVisual = nullptr;
+  auto* screen = gtk_widget_get_screen(mShell);
   if (haveVisual) {
     // If we're using CSD, rendering will go through mContainer, but
     // it will inherit this visual as it is a child of mShell.
     gdkVisual = gdk_x11_screen_lookup_visual(screen, visualId);
   }
   if (!gdkVisual) {
-    NS_WARNING("We're missing X11 Visual!");
     if (aUseAlpha || useWebRender) {
       // We try to use a fallback alpha visual
       GdkScreen* screen = gtk_widget_get_screen(mShell);

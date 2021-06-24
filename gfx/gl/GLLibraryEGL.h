@@ -69,6 +69,7 @@ enum class EGLLibExtension {
   ANGLE_device_creation_d3d11,
   ANGLE_platform_angle,
   ANGLE_platform_angle_d3d,
+  EXT_config_select_group,
   Max
 };
 
