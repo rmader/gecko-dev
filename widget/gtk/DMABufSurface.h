@@ -128,6 +128,14 @@ class DMABufSurface {
 
   DMABufSurface(SurfaceType aSurfaceType);
 
+  uint64_t mBufferModifier;
+  int mBufferPlaneCount;
+  int mDmabufFds[DMABUF_BUFFER_PLANES];
+  uint32_t mDrmFormats[DMABUF_BUFFER_PLANES];
+  uint32_t mStrides[DMABUF_BUFFER_PLANES];
+  uint32_t mOffsets[DMABUF_BUFFER_PLANES];
+  bool OpenFileDescriptors();
+
  protected:
   virtual bool Create(const mozilla::layers::SurfaceDescriptor& aDesc) = 0;
   bool FenceImportFromFd();
@@ -146,19 +154,11 @@ class DMABufSurface {
   virtual bool OpenFileDescriptorForPlane(int aPlane) = 0;
   virtual void CloseFileDescriptorForPlane(int aPlane,
                                            bool aForceClose = false) = 0;
-  bool OpenFileDescriptors();
   void CloseFileDescriptors(bool aForceClose = false);
 
   virtual ~DMABufSurface();
 
   SurfaceType mSurfaceType;
-  uint64_t mBufferModifier;
-
-  int mBufferPlaneCount;
-  int mDmabufFds[DMABUF_BUFFER_PLANES];
-  uint32_t mDrmFormats[DMABUF_BUFFER_PLANES];
-  uint32_t mStrides[DMABUF_BUFFER_PLANES];
-  uint32_t mOffsets[DMABUF_BUFFER_PLANES];
 
   struct gbm_bo* mGbmBufferObject[DMABUF_BUFFER_PLANES];
   void* mMappedRegion[DMABUF_BUFFER_PLANES];

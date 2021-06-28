@@ -8,7 +8,10 @@
 
 #include <wayland-egl.h>
 
+#include "GLContext.h"
+#include "MozFramebuffer.h"
 #include "mozilla/layers/SurfacePool.h"
+#include "mozilla/widget/DMABufSurface.h"
 #include "mozilla/widget/nsWaylandDisplay.h"
 #include "mozilla/widget/WaylandShmBuffer.h"
 
@@ -19,7 +22,9 @@ using gfx::IntPoint;
 using gfx::IntRegion;
 using gfx::IntSize;
 using gfx::Rect;
+using gl::DepthAndStencilBuffer;
 using gl::GLContext;
+using gl::MozFramebuffer;
 using widget::nsWaylandDisplay;
 using widget::WaylandShmBuffer;
 
@@ -52,7 +57,9 @@ class NativeSurfaceWayland {
   static RefPtr<NativeSurfaceWayland> Create(const IntSize& aSize,
                                              GLContext* aGL);
 
-  virtual Maybe<GLuint> GetAsFramebuffer() { return Nothing(); };
+  virtual Maybe<GLuint> GetAsFramebuffer(bool aNeedsDepthBuffer) {
+    return Nothing();
+  };
   virtual RefPtr<DrawTarget> GetAsDrawTarget() { return nullptr; };
 
   virtual void Commit(const IntRegion& aInvalidRegion) = 0;
@@ -96,7 +103,7 @@ class NativeSurfaceWayland {
 
 class NativeSurfaceWaylandEGL final : public NativeSurfaceWayland {
  public:
-  Maybe<GLuint> GetAsFramebuffer() override;
+  Maybe<GLuint> GetAsFramebuffer(bool aNeedsDepthBuffer) override;
   void Commit(const IntRegion& aInvalidRegion) override;
   void NotifySurfaceReady() override;
   void DestroyGLResources() override;
@@ -120,6 +127,7 @@ class NativeSurfaceWaylandSHM final : public NativeSurfaceWayland {
  public:
   RefPtr<DrawTarget> GetAsDrawTarget() override;
   void Commit(const IntRegion& aInvalidRegion) override;
+
   static void BufferReleaseCallbackHandler(void* aData, wl_buffer* aBuffer);
 
  private:
@@ -129,15 +137,80 @@ class NativeSurfaceWaylandSHM final : public NativeSurfaceWayland {
   NativeSurfaceWaylandSHM(const RefPtr<nsWaylandDisplay>& aWaylandDisplay,
                           const IntSize& aSize);
 
-  RefPtr<WaylandShmBuffer> ObtainBufferFromPool();
-  void ReturnBufferToPool(const RefPtr<WaylandShmBuffer>& aBuffer);
-  void EnforcePoolSizeLimit();
+  RefPtr<WaylandShmBuffer> ObtainBufferFromPool(const MutexAutoLock& aLock);
+  void ReturnBufferToPool(const MutexAutoLock& aLock,
+                          const RefPtr<WaylandShmBuffer>& aBuffer);
+  void EnforcePoolSizeLimit(const MutexAutoLock& aLock);
   void BufferReleaseCallbackHandler(wl_buffer* aBuffer);
 
   IntSize mSize;
   nsTArray<RefPtr<WaylandShmBuffer>> mInUseBuffers;
   nsTArray<RefPtr<WaylandShmBuffer>> mAvailableBuffers;
   RefPtr<WaylandShmBuffer> mCurrentBuffer;
+};
+
+class WaylandDMABUFBuffer {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WaylandDMABUFBuffer);
+
+  explicit WaylandDMABUFBuffer();
+
+  wl_buffer* GetWlBuffer() { return mWLBuffer; };
+  bool IsMatchingSize(const LayoutDeviceIntSize& aSize) {
+    return aSize == mSize;
+  }
+
+  RefPtr<DMABufSurface> mDMABufSurface;
+  wl_buffer* mWLBuffer = nullptr;
+  LayoutDeviceIntSize mSize;
+  UniquePtr<MozFramebuffer> mFB;
+
+ private:
+  ~WaylandDMABUFBuffer();
+};
+
+class NativeSurfaceWaylandDMABUF final : public NativeSurfaceWayland {
+ public:
+  Maybe<GLuint> GetAsFramebuffer(bool aNeedsDepthBuffer) override;
+  void Commit(const IntRegion& aInvalidRegion) override;
+  void DestroyGLResources() override;
+
+  static void BufferReleaseCallbackHandler(void* aData, wl_buffer* aBuffer);
+
+ private:
+  friend RefPtr<NativeSurfaceWayland> NativeSurfaceWayland::Create(
+      const IntSize& aSize, GLContext* aGL);
+
+  NativeSurfaceWaylandDMABUF(const RefPtr<nsWaylandDisplay>& aWaylandDisplay,
+                             const IntSize& aSize, GLContext* aGL);
+  ~NativeSurfaceWaylandDMABUF();
+
+  RefPtr<WaylandDMABUFBuffer> ObtainBufferFromPool(const MutexAutoLock& aLock,
+                                                   bool aNeedsDepthBuffer);
+  void ReturnBufferToPool(const MutexAutoLock& aLock,
+                          const RefPtr<WaylandDMABUFBuffer>& aBuffer);
+  void EnforcePoolSizeLimit(const MutexAutoLock& aLock);
+  UniquePtr<MozFramebuffer> CreateFramebufferForTexture(
+      const MutexAutoLock& aLock, GLContext* aGL, const IntSize& aSize,
+      GLuint aTexture, bool aNeedsDepthBuffer);
+  RefPtr<DepthAndStencilBuffer> GetDepthBufferForSharing(
+      const MutexAutoLock& aLock, GLContext* aGL, const IntSize& aSize);
+  void BufferReleaseCallbackHandler(wl_buffer* aBuffer);
+
+  IntSize mSize;
+  GLContext* mGL = nullptr;
+
+  nsTArray<RefPtr<WaylandDMABUFBuffer>> mInUseBuffers;
+  nsTArray<RefPtr<WaylandDMABUFBuffer>> mAvailableBuffers;
+  RefPtr<WaylandDMABUFBuffer> mCurrentBuffer;
+
+  struct DepthBufferEntry {
+    RefPtr<GLContext> mGLContext;
+    IntSize mSize;
+    WeakPtr<DepthAndStencilBuffer> mBuffer;
+  };
+
+  nsTArray<DepthBufferEntry> mDepthBuffers;
 };
 
 class SurfacePoolWayland final : public SurfacePool {
@@ -185,7 +258,6 @@ class SurfacePoolWayland final : public SurfacePool {
   // Stores entries which are available for recycling. These entries are not
   // in use by a NativeLayerWayland or by the window server.
   nsTArray<SurfacePoolEntry> mAvailableEntries;
-
   size_t mPoolSizeLimit;
 };
 

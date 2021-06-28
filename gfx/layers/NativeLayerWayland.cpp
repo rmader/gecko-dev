@@ -135,6 +135,11 @@ void NativeLayerRootWayland::SetLayers(
     const nsTArray<RefPtr<NativeLayer>>& aLayers) {
   MutexAutoLock lock(mMutex);
 
+  /*if (aLayers.IsEmpty()) {
+    fprintf(stderr, "NativeLayerRootWayland::SetLayers empty!\n");
+    mSublayersOnMainThread.Clear();
+  }*/
+
   // Ideally, we'd just be able to do mSublayers = std::move(aLayers).
   // However, aLayers has a different type: it carries NativeLayer objects,
   // whereas mSublayers carries NativeLayerWayland objects, so we have to
@@ -525,7 +530,8 @@ Maybe<GLuint> NativeLayerWayland::NextSurfaceAsFramebuffer(
     mNativeSurface = mSurfacePoolHandle->ObtainSurfaceFromPool(mSize);
   }
 
-  return mNativeSurface ? mNativeSurface->GetAsFramebuffer() : Nothing();
+  return mNativeSurface ? mNativeSurface->GetAsFramebuffer(aNeedsDepth)
+                        : Nothing();
 }
 
 void NativeLayerWayland::NotifySurfaceReady() {
