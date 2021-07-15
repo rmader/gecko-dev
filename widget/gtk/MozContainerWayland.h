@@ -86,6 +86,7 @@ void moz_container_wayland_update_opaque_region(MozContainer* container,
                                                 bool aSubtractCorners);
 gboolean moz_container_wayland_can_draw(MozContainer* container);
 double moz_container_wayland_get_scale(MozContainer* container);
+double moz_container_wayland_get_scale_locked(MozContainer* container);
 struct wp_viewport* moz_container_wayland_get_viewport(MozContainer* container);
 gboolean moz_container_wayland_get_and_reset_remapped(MozContainer* container);
 gboolean moz_container_wayland_is_inactive(MozContainer* container);

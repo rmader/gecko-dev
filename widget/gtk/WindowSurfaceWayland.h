@@ -15,7 +15,7 @@
 #include "mozilla/Mutex.h"
 #include "nsWaylandDisplay.h"
 #include "nsWindow.h"
-#include "WaylandShmBuffer.h"
+#include "WaylandBuffer.h"
 #include "WindowSurface.h"
 
 #define BACK_BUFFER_NUM 3

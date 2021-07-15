@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "WaylandShmBuffer.h"
+#include "WaylandBuffer.h"
 
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -31,7 +31,7 @@ extern mozilla::LazyLogModule gWidgetWaylandLog;
 namespace mozilla::widget {
 
 #define BUFFER_BPP 4
-gfx::SurfaceFormat WaylandShmBuffer::mFormat = gfx::SurfaceFormat::B8G8R8A8;
+gfx::SurfaceFormat WaylandBuffer::mFormat = gfx::SurfaceFormat::B8G8R8A8;
 
 #ifdef MOZ_LOGGING
 int WaylandShmBuffer::mDumpSerial =
@@ -144,60 +144,14 @@ WaylandShmPool::~WaylandShmPool() {
   }
 }
 
-static const struct wl_buffer_listener sBufferListenerWaylandShmBuffer = {
-    WaylandShmBuffer::BufferReleaseCallbackHandler};
+static const struct wl_buffer_listener sBufferListenerWaylandBuffer = {
+    WaylandBuffer::BufferReleaseCallbackHandler};
 
-/* static */
-RefPtr<WaylandShmBuffer> WaylandShmBuffer::Create(
-    const RefPtr<nsWaylandDisplay>& aWaylandDisplay,
-    const LayoutDeviceIntSize& aSize) {
-  RefPtr<WaylandShmBuffer> buffer = new WaylandShmBuffer(aSize);
+WaylandBuffer::WaylandBuffer(const LayoutDeviceIntSize& aSize) : mSize(aSize) {}
 
-  int size = aSize.width * aSize.height * BUFFER_BPP;
-  buffer->mShmPool = WaylandShmPool::Create(aWaylandDisplay, size);
-  if (!buffer->mShmPool) {
-    return nullptr;
-  }
-
-  buffer->mWLBuffer = wl_shm_pool_create_buffer(
-      buffer->mShmPool->GetShmPool(), 0, aSize.width, aSize.height,
-      aSize.width * BUFFER_BPP, WL_SHM_FORMAT_ARGB8888);
-  if (!buffer->mWLBuffer) {
-    return nullptr;
-  }
-
-  wl_proxy_set_queue((struct wl_proxy*)buffer->mWLBuffer,
-                     aWaylandDisplay->GetEventQueue());
-  wl_buffer_add_listener(buffer->mWLBuffer, &sBufferListenerWaylandShmBuffer,
-                         buffer.get());
-
-  LOGWAYLAND(("WaylandShmBuffer Created [%p] WaylandDisplay [%p]\n",
-              buffer.get(), aWaylandDisplay.get()));
-
-  return buffer;
-}
-
-WaylandShmBuffer::WaylandShmBuffer(const LayoutDeviceIntSize& aSize)
-    : mWLBuffer(nullptr),
-      mBufferReleaseFunc(nullptr),
-      mBufferReleaseData(nullptr),
-      mSize(aSize),
-      mBufferAge(0),
-      mAttached(false) {}
-
-WaylandShmBuffer::~WaylandShmBuffer() {
-  g_clear_pointer(&mWLBuffer, wl_buffer_destroy);
-}
-
-already_AddRefed<gfx::DrawTarget> WaylandShmBuffer::Lock() {
-  return gfxPlatform::CreateDrawTargetForData(
-      static_cast<unsigned char*>(mShmPool->GetImageData()),
-      mSize.ToUnknownSize(), BUFFER_BPP * mSize.width, GetSurfaceFormat());
-}
-
-void WaylandShmBuffer::AttachAndCommit(wl_surface* aSurface) {
+void WaylandBuffer::AttachAndCommit(wl_surface* aSurface) {
   LOGWAYLAND(
-      ("WaylandShmBuffer::AttachAndCommit [%p] wl_surface %p ID %d wl_buffer "
+      ("WaylandBuffer::AttachAndCommit [%p] wl_surface %p ID %d wl_buffer "
        "%p ID %d\n",
        (void*)this, (void*)aSurface,
        aSurface ? wl_proxy_get_id((struct wl_proxy*)aSurface) : -1,
@@ -212,11 +166,7 @@ void WaylandShmBuffer::AttachAndCommit(wl_surface* aSurface) {
   }
 }
 
-void WaylandShmBuffer::Clear() {
-  memset(mShmPool->GetImageData(), 0, mSize.height * mSize.width * BUFFER_BPP);
-}
-
-void WaylandShmBuffer::BufferReleaseCallbackHandler(wl_buffer* aBuffer) {
+void WaylandBuffer::BufferReleaseCallbackHandler(wl_buffer* aBuffer) {
   mAttached = false;
 
   if (mBufferReleaseFunc) {
@@ -224,10 +174,55 @@ void WaylandShmBuffer::BufferReleaseCallbackHandler(wl_buffer* aBuffer) {
   }
 }
 
-void WaylandShmBuffer::BufferReleaseCallbackHandler(void* aData,
-                                                    wl_buffer* aBuffer) {
-  auto* shmBuffer = reinterpret_cast<WaylandShmBuffer*>(aData);
-  shmBuffer->BufferReleaseCallbackHandler(aBuffer);
+void WaylandBuffer::BufferReleaseCallbackHandler(void* aData,
+                                                 wl_buffer* aBuffer) {
+  auto* buffer = reinterpret_cast<WaylandBuffer*>(aData);
+  buffer->BufferReleaseCallbackHandler(aBuffer);
+}
+
+/* static */
+RefPtr<WaylandShmBuffer> WaylandShmBuffer::Create(
+    const LayoutDeviceIntSize& aSize) {
+  RefPtr<WaylandShmBuffer> buffer = new WaylandShmBuffer(aSize);
+  RefPtr<nsWaylandDisplay> waylandDisplay = WaylandDisplayGet();
+
+  int size = aSize.width * aSize.height * BUFFER_BPP;
+  buffer->mShmPool = WaylandShmPool::Create(waylandDisplay, size);
+  if (!buffer->mShmPool) {
+    return nullptr;
+  }
+
+  buffer->mWLBuffer = wl_shm_pool_create_buffer(
+      buffer->mShmPool->GetShmPool(), 0, aSize.width, aSize.height,
+      aSize.width * BUFFER_BPP, WL_SHM_FORMAT_ARGB8888);
+  if (!buffer->mWLBuffer) {
+    return nullptr;
+  }
+
+  wl_buffer_add_listener(buffer->GetWlBuffer(), &sBufferListenerWaylandBuffer,
+                         buffer.get());
+
+  LOGWAYLAND(("WaylandShmBuffer Created [%p] WaylandDisplay [%p]\n",
+              buffer.get(), waylandDisplay.get()));
+
+  return buffer;
+}
+
+WaylandShmBuffer::WaylandShmBuffer(const LayoutDeviceIntSize& aSize)
+    : WaylandBuffer(aSize) {}
+
+WaylandShmBuffer::~WaylandShmBuffer() {
+  g_clear_pointer(&mWLBuffer, wl_buffer_destroy);
+}
+
+already_AddRefed<gfx::DrawTarget> WaylandShmBuffer::Lock() {
+  return gfxPlatform::CreateDrawTargetForData(
+      static_cast<unsigned char*>(mShmPool->GetImageData()),
+      mSize.ToUnknownSize(), BUFFER_BPP * mSize.width, GetSurfaceFormat());
+}
+
+void WaylandShmBuffer::Clear() {
+  memset(mShmPool->GetImageData(), 0, mSize.height * mSize.width * BUFFER_BPP);
 }
 
 #ifdef MOZ_LOGGING
@@ -258,5 +253,31 @@ void WaylandShmBuffer::DumpToFile(const char* aHint) {
   }
 }
 #endif
+
+/* static */
+RefPtr<WaylandDMABUFBuffer> WaylandDMABUFBuffer::Create(
+    const LayoutDeviceIntSize& aSize, GLContext* aGL) {
+  RefPtr<WaylandDMABUFBuffer> buffer = new WaylandDMABUFBuffer(aSize);
+
+  const auto flags =
+      static_cast<DMABufSurfaceFlags>(DMABUF_TEXTURE | DMABUF_ALPHA);
+  buffer->mDMABufSurface =
+      DMABufSurfaceRGBA::CreateDMABufSurface(aSize.width, aSize.height, flags);
+  if (!buffer->mDMABufSurface || !buffer->mDMABufSurface->CreateTexture(aGL)) {
+    return nullptr;
+  }
+
+  if (!buffer->mDMABufSurface->CreateWlBuffer()) {
+    return nullptr;
+  }
+
+  wl_buffer_add_listener(buffer->GetWlBuffer(), &sBufferListenerWaylandBuffer,
+                         buffer.get());
+
+  return buffer;
+}
+
+WaylandDMABUFBuffer::WaylandDMABUFBuffer(const LayoutDeviceIntSize& aSize)
+    : WaylandBuffer(aSize) {}
 
 }  // namespace mozilla::widget

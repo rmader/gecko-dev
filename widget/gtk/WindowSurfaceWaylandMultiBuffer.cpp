@@ -317,8 +317,7 @@ RefPtr<WaylandShmBuffer> WindowSurfaceWaylandMB::ObtainBufferFromPool(
     return buffer;
   }
 
-  RefPtr<WaylandShmBuffer> buffer =
-      WaylandShmBuffer::Create(WaylandDisplayGet(), aSize);
+  RefPtr<WaylandShmBuffer> buffer = WaylandShmBuffer::Create(aSize);
   mInUseBuffers.AppendElement(buffer);
 
   return buffer;

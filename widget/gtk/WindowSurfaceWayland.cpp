@@ -220,8 +220,7 @@ WaylandShmBuffer* WindowSurfaceWayland::CreateWaylandBuffer(
     return nullptr;
   }
 
-  RefPtr<WaylandShmBuffer> buffer =
-      WaylandShmBuffer::Create(GetWaylandDisplay(), aSize);
+  RefPtr<WaylandShmBuffer> buffer = WaylandShmBuffer::Create(aSize);
   if (!buffer) {
     LOGWAYLAND(("    failed to create back buffer!\n"));
     return nullptr;

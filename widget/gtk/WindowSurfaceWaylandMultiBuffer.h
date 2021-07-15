@@ -13,7 +13,7 @@
 #include "nsTArray.h"
 #include "nsWaylandDisplay.h"
 #include "nsWindow.h"
-#include "WaylandShmBuffer.h"
+#include "WaylandBuffer.h"
 #include "WindowSurface.h"
 
 namespace mozilla::widget {
