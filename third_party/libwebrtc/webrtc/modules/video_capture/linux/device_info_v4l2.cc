@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "modules/video_capture/linux/device_info_linux.h"
+#include "modules/video_capture/linux/device_info_v4l2.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -36,12 +36,8 @@
 
 namespace webrtc {
 namespace videocapturemodule {
-VideoCaptureModule::DeviceInfo* VideoCaptureImpl::CreateDeviceInfo() {
-  return new videocapturemodule::DeviceInfoLinux();
-}
-
 #ifdef WEBRTC_LINUX
-void DeviceInfoLinux::HandleEvent(inotify_event* event, int fd)
+void DeviceInfoV4L2::HandleEvent(inotify_event* event, int fd)
 {
     if (event->mask & IN_CREATE) {
         if (fd == _fd_v4l) {
@@ -71,7 +67,7 @@ void DeviceInfoLinux::HandleEvent(inotify_event* event, int fd)
     }
 }
 
-int DeviceInfoLinux::EventCheck(int fd)
+int DeviceInfoV4L2::EventCheck(int fd)
 {
     struct pollfd fds = {
       .fd = fd,
@@ -82,7 +78,7 @@ int DeviceInfoLinux::EventCheck(int fd)
     return poll(&fds, 1, 100);
 }
 
-int DeviceInfoLinux::HandleEvents(int fd)
+int DeviceInfoV4L2::HandleEvents(int fd)
 {
     char buffer[BUF_LEN];
 
@@ -115,7 +111,7 @@ int DeviceInfoLinux::HandleEvents(int fd)
     return count;
 }
 
-int DeviceInfoLinux::ProcessInotifyEvents()
+int DeviceInfoV4L2::ProcessInotifyEvents()
 {
     while (0 == _isShutdown.Value()) {
         if (EventCheck(_fd_dev) > 0) {
@@ -132,12 +128,12 @@ int DeviceInfoLinux::ProcessInotifyEvents()
     return 0;
 }
 
-bool DeviceInfoLinux::InotifyEventThread(void* obj)
+bool DeviceInfoV4L2::InotifyEventThread(void* obj)
 {
-    return static_cast<DeviceInfoLinux*> (obj)->InotifyProcess();
+    return static_cast<DeviceInfoV4L2*> (obj)->InotifyProcess();
 }
 
-bool DeviceInfoLinux::InotifyProcess()
+bool DeviceInfoV4L2::InotifyProcess()
 {
     _fd_v4l = inotify_init();
     _fd_dev = inotify_init();
@@ -163,7 +159,7 @@ bool DeviceInfoLinux::InotifyProcess()
 }
 #endif
 
-DeviceInfoLinux::DeviceInfoLinux() : DeviceInfoImpl()
+DeviceInfoV4L2::DeviceInfoV4L2() : DeviceInfoImpl()
 #ifdef WEBRTC_LINUX
     , _inotifyEventThread(new rtc::PlatformThread(
                             InotifyEventThread, this, "InotifyEventThread"))
@@ -179,11 +175,11 @@ DeviceInfoLinux::DeviceInfoLinux() : DeviceInfoImpl()
 #endif
 }
 
-int32_t DeviceInfoLinux::Init() {
+int32_t DeviceInfoV4L2::Init() {
   return 0;
 }
 
-DeviceInfoLinux::~DeviceInfoLinux() {
+DeviceInfoV4L2::~DeviceInfoV4L2() {
 #ifdef WEBRTC_LINUX
     ++_isShutdown;
 
@@ -194,7 +190,7 @@ DeviceInfoLinux::~DeviceInfoLinux() {
 #endif
 }
 
-uint32_t DeviceInfoLinux::NumberOfDevices() {
+uint32_t DeviceInfoV4L2::NumberOfDevices() {
   RTC_LOG(LS_INFO) << __FUNCTION__;
 
   uint32_t count = 0;
@@ -220,7 +216,7 @@ uint32_t DeviceInfoLinux::NumberOfDevices() {
   return count;
 }
 
-int32_t DeviceInfoLinux::GetDeviceName(uint32_t deviceNumber,
+int32_t DeviceInfoV4L2::GetDeviceName(uint32_t deviceNumber,
                                        char* deviceNameUTF8,
                                        uint32_t deviceNameSize,
                                        char* deviceUniqueIdUTF8,
@@ -303,7 +299,7 @@ int32_t DeviceInfoLinux::GetDeviceName(uint32_t deviceNumber,
   return 0;
 }
 
-int32_t DeviceInfoLinux::CreateCapabilityMap(const char* deviceUniqueIdUTF8) {
+int32_t DeviceInfoV4L2::CreateCapabilityMap(const char* deviceUniqueIdUTF8) {
   int fd;
   char device[32];
   bool found = false;
@@ -377,14 +373,14 @@ int32_t DeviceInfoLinux::CreateCapabilityMap(const char* deviceUniqueIdUTF8) {
   return size;
 }
 
-bool DeviceInfoLinux::IsDeviceNameMatches(const char* name,
+bool DeviceInfoV4L2::IsDeviceNameMatches(const char* name,
                                           const char* deviceUniqueIdUTF8) {
   if (strncmp(deviceUniqueIdUTF8, name, strlen(name)) == 0)
     return true;
   return false;
 }
 
-bool DeviceInfoLinux::IsVideoCaptureDevice(struct v4l2_capability* cap)
+bool DeviceInfoV4L2::IsVideoCaptureDevice(struct v4l2_capability* cap)
 {
   if (cap->capabilities & V4L2_CAP_DEVICE_CAPS) {
     return cap->device_caps & V4L2_CAP_VIDEO_CAPTURE;
@@ -393,7 +389,7 @@ bool DeviceInfoLinux::IsVideoCaptureDevice(struct v4l2_capability* cap)
   }
 }
 
-int32_t DeviceInfoLinux::FillCapabilities(int fd) {
+int32_t DeviceInfoV4L2::FillCapabilities(int fd) {
   // set image format
   struct v4l2_format video_fmt;
   memset(&video_fmt, 0, sizeof(struct v4l2_format));

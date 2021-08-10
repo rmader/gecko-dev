@@ -8,8 +8,8 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_LINUX_H_
-#define MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_LINUX_H_
+#ifndef MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_V4L2_H_
+#define MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_V4L2_H_
 
 #include "modules/video_capture/device_info_impl.h"
 #include "modules/video_capture/video_capture_impl.h"
@@ -27,11 +27,11 @@ namespace webrtc
 {
 namespace videocapturemodule
 {
-class DeviceInfoLinux: public DeviceInfoImpl
+class DeviceInfoV4L2: public DeviceInfoImpl
 {
 public:
-    DeviceInfoLinux();
-    virtual ~DeviceInfoLinux();
+    DeviceInfoV4L2();
+    virtual ~DeviceInfoV4L2();
     virtual uint32_t NumberOfDevices();
     virtual int32_t GetDeviceName(
         uint32_t deviceNumber,
@@ -73,4 +73,4 @@ private:
 };
 }  // namespace videocapturemodule
 }  // namespace webrtc
-#endif // MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_LINUX_H_
+#endif // MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_V4L2_H_

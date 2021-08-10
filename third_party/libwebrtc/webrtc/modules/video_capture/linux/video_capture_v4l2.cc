@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "modules/video_capture/linux/video_capture_linux.h"
+#include "modules/video_capture/linux/video_capture_v4l2.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,21 +34,9 @@
 #include "media/base/videocommon.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/refcount.h"
-#include "rtc_base/refcountedobject.h"
-#include "rtc_base/scoped_ref_ptr.h"
 
 namespace webrtc {
 namespace videocapturemodule {
-rtc::scoped_refptr<VideoCaptureModule> VideoCaptureImpl::Create(
-    const char* deviceUniqueId) {
-  rtc::scoped_refptr<VideoCaptureModuleV4L2> implementation(
-      new rtc::RefCountedObject<VideoCaptureModuleV4L2>());
-
-  if (implementation->Init(deviceUniqueId) != 0)
-    return nullptr;
-
-  return implementation;
-}
 
 VideoCaptureModuleV4L2::VideoCaptureModuleV4L2()
     : VideoCaptureImpl(),
