@@ -6,6 +6,9 @@
   ### This moz.build was AUTOMATICALLY GENERATED from a GN config,  ###
   ### DO NOT edit it by hand.                                       ###
 
+if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    CXXFLAGS += CONFIG["TK_CFLAGS"]
+
 COMPILE_FLAGS["OS_INCLUDES"] = []
 AllowCompilerWarnings()
 
@@ -82,16 +85,23 @@ if CONFIG["OS_TARGET"] == "Linux":
     DEFINES["USE_X11"] = "1"
     DEFINES["WEBRTC_LINUX"] = True
     DEFINES["WEBRTC_POSIX"] = True
+    DEFINES["WEBRTC_USE_PIPEWIRE"] = True
     DEFINES["_FILE_OFFSET_BITS"] = "64"
 
     OS_LIBS += [
         "rt"
     ]
 
+    LOCAL_INCLUDES += [
+        "/third_party/pipewire/"
+    ]
+
     UNIFIED_SOURCES += [
         "/third_party/libwebrtc/webrtc/modules/video_capture/linux/device_info_factory_linux.cc",
+        "/third_party/libwebrtc/webrtc/modules/video_capture/linux/device_info_pipewire.cc",
         "/third_party/libwebrtc/webrtc/modules/video_capture/linux/device_info_v4l2.cc",
         "/third_party/libwebrtc/webrtc/modules/video_capture/linux/video_capture_factory_linux.cc",
+        "/third_party/libwebrtc/webrtc/modules/video_capture/linux/video_capture_pipewire.cc",
         "/third_party/libwebrtc/webrtc/modules/video_capture/linux/video_capture_v4l2.cc"
     ]
 
