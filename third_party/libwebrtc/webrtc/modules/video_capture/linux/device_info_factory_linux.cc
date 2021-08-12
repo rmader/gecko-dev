@@ -8,11 +8,18 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "modules/video_capture/linux/device_info_pipewire.h"
 #include "modules/video_capture/linux/device_info_v4l2.h"
 
 namespace webrtc {
 namespace videocapturemodule {
 VideoCaptureModule::DeviceInfo* VideoCaptureImpl::CreateDeviceInfo() {
+  videocapturemodule::DeviceInfoPipewire *device_info = new videocapturemodule::DeviceInfoPipewire();
+  if (device_info->Init() != -1 && device_info->NumberOfDevices() > 0) {
+    return device_info;
+  }
+  delete device_info;
+
   return new videocapturemodule::DeviceInfoV4L2();
 }
 }  // namespace videocapturemodule

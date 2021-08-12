@@ -8,6 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "modules/video_capture/linux/video_capture_pipewire.h"
 #include "modules/video_capture/linux/video_capture_v4l2.h"
 
 #include "rtc_base/refcountedobject.h"
@@ -17,13 +18,21 @@ namespace webrtc {
 namespace videocapturemodule {
 rtc::scoped_refptr<VideoCaptureModule> VideoCaptureImpl::Create(
     const char* deviceUniqueId) {
-  rtc::scoped_refptr<VideoCaptureModuleV4L2> implementation(
-      new rtc::RefCountedObject<VideoCaptureModuleV4L2>());
-
-  if (implementation->Init(deviceUniqueId) != 0)
-    return nullptr;
-
-  return implementation;
+  if (strcmp(deviceUniqueId, kPipewireDeviceUniqueId) == 0) {
+    rtc::scoped_refptr<VideoCaptureModulePipewire> implementation(
+        new rtc::RefCountedObject<VideoCaptureModulePipewire>());
+    if (implementation->Init(deviceUniqueId) != 0) {
+      return nullptr;
+    }
+    return implementation;
+  } else {
+    rtc::scoped_refptr<VideoCaptureModuleV4L2> implementation(
+        new rtc::RefCountedObject<VideoCaptureModuleV4L2>());
+    if (implementation->Init(deviceUniqueId) != 0) {
+      return nullptr;
+    }
+    return implementation;
+  }
 }
 }  // namespace videocapturemodule
 }  // namespace webrtc

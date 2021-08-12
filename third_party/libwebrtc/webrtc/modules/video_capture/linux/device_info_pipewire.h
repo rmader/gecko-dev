@@ -11,6 +11,7 @@
 #ifndef MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_PIPEWIRE_H_
 #define MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_DEVICE_INFO_PIPEWIRE_H_
 
+#include <gio/gio.h>
 #include <pipewire/pipewire.h>
 
 #include "modules/video_capture/device_info_impl.h"
@@ -48,6 +49,8 @@ public:
         uint32_t /*positionY*/) { return -1;}
     int32_t Init();
 
+private:
+    GDBusProxy* _proxy;
 };
 }  // namespace videocapturemodule
 }  // namespace webrtc

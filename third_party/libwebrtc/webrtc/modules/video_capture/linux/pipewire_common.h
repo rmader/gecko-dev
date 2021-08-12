@@ -8,5 +8,7 @@ const char kDesktopRequestObjectPath[] =
 const char kSessionInterfaceName[] = "org.freedesktop.portal.Session";
 const char kRequestInterfaceName[] = "org.freedesktop.portal.Request";
 const char kCameraInterfaceName[] = "org.freedesktop.portal.Camera";
+const char kPipewireDeviceName[] = "System provided";
+const char kPipewireDeviceUniqueId[] = "pipewire_0";
 
 #endif // MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_PIPEWIRE_COMMON_H_
